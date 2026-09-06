@@ -50,10 +50,13 @@ class PipelineService(ABC):
         self.settings = settings
 
     async def execute(self, ctx: PipelineContext) -> dict[str, Any]:
-        """Run this stage for ``ctx``. Phase 1: always a controlled refusal."""
+        """Run this stage for ``ctx``: always a controlled refusal.
+
+        Upload/validation (Phase 2) is the only implemented stage so far.
+        """
         raise NotInPhase1Error(
             f"{self.name} is planned for {self.planned_for} and is not "
-            "implemented yet (Phase 1). No real processing was performed."
+            "implemented yet. No real processing was performed."
         )
 
     def describe(self) -> dict[str, str]:

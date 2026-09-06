@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from app.database.schema import SCHEMA_SQL
+from app.database.schema import SCHEMA_SQL, migrate_schema
 from app.utils.errors import DatabaseOperationError
 from app.utils.logging import get_logger
 
@@ -39,6 +39,7 @@ class Database:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self._connect() as conn:
                 conn.executescript(SCHEMA_SQL)
+                migrate_schema(conn)
         except (sqlite3.Error, OSError) as exc:
             raise DatabaseOperationError(
                 f"Could not initialize database at '{self.path}': {exc}"

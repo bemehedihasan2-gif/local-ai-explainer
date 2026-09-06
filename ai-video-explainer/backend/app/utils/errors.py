@@ -84,15 +84,81 @@ class ProjectNotFoundError(ExplainerError):
     default_message = "Project not found."
 
 
-class NotInPhase1Error(ExplainerError):
-    """Feature is deliberately not implemented yet (Phase 1 scope guard).
+class MissingFileError(ExplainerError):
+    """No file part / empty filename was supplied for an upload."""
 
-    Pipeline services raise this instead of faking AI results.
+    status_code = 400
+    code = "missing_file"
+    default_message = "No file was provided with the upload request."
+
+
+class UnsupportedFileTypeError(ExplainerError):
+    """File extension is not in the configured video container allowlist."""
+
+    status_code = 400
+    code = "unsupported_file_type"
+    default_message = "The file type is not supported."
+
+
+class UploadTooLargeError(ExplainerError):
+    """Upload exceeds the configured maximum size."""
+
+    status_code = 413
+    code = "upload_too_large"
+    default_message = "Video file exceeds the maximum allowed upload size."
+
+
+class InvalidVideoError(ExplainerError):
+    """FFprobe could not validate the file as a usable video.
+
+    Covers corrupt files, non-video files and files whose metadata is
+    impossible (empty, no video stream, no duration, no dimensions).
+    """
+
+    status_code = 422
+    code = "invalid_video"
+    default_message = "The file could not be validated as a video."
+
+
+class DuplicateVideoError(ExplainerError):
+    """The exact same file content (SHA-256) was uploaded before."""
+
+    status_code = 409
+    code = "duplicate_video"
+    default_message = "This exact video was already uploaded."
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        project_id: str | None = None,
+        existing_project_id: str | None = None,
+        existing_filename: str | None = None,
+    ) -> None:
+        super().__init__(message, project_id=project_id)
+        self.existing_project_id = existing_project_id
+        self.existing_filename = existing_filename
+
+
+class InvalidParameterError(ExplainerError):
+    """A request field failed domain validation (language, duration, ...)."""
+
+    status_code = 422
+    code = "invalid_parameter"
+    default_message = "A request parameter is invalid."
+
+
+class NotInPhase1Error(ExplainerError):
+    """Feature is deliberately not implemented yet (scope guard).
+
+    Pipeline services raise this instead of faking AI results. The name and
+    code are kept from Phase 1 for compatibility, but the class is used for
+    any stage later phases have not implemented yet.
     """
 
     status_code = 501
     code = "not_implemented_phase_1"
-    default_message = "This capability is not implemented yet in Phase 1."
+    default_message = "This capability is not implemented yet."
 
 
 class PathTraversalError(ExplainerError):

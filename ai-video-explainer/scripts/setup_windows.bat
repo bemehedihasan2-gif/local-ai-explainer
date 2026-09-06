@@ -1,6 +1,6 @@
 @echo off
 setlocal
-REM One-time Windows setup for the Local AI Video Explainer (Phase 1).
+REM One-time Windows setup for the Local AI Video Explainer (Phase 2).
 cd /d "%~dp0.."
 
 where python >nul 2>nul
@@ -38,7 +38,9 @@ echo.
 echo Setup complete. Next steps:
 echo   scripts\run_backend.bat    - start FastAPI on http://127.0.0.1:8000
 echo   scripts\run_frontend.bat   - start the UI on http://127.0.0.1:5173
-echo   scripts\run_tests.bat      - run the test suite
+echo   scripts\run_tests.bat      - run the test suite (FFmpeg tests skip if missing)
 echo.
-echo FFmpeg: required from Phase 2. Check it with:  ffmpeg -version
+echo FFmpeg: REQUIRED for Phase 2 uploads. Check it with:  ffmpeg -version
+echo If missing, install via: winget install Gyan.FFmpeg
+echo (or https://ffmpeg.org/download.html) and make sure ffmpeg/ffprobe are
 endlocal

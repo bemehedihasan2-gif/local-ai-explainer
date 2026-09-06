@@ -19,6 +19,9 @@ from app.models.enums import (
 #: Valid language codes accepted by the API.
 LanguageCode = Literal["en", "hi", "bn"]
 
+#: Valid explanation durations in seconds (2/3/4 minutes).
+TargetDurationSeconds = Literal[120, 180, 240]
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -52,18 +55,30 @@ class ProjectCreate(BaseModel):
 
 
 class ProjectOut(BaseModel):
-    """Full project record returned to clients."""
+    """Public project record returned to clients.
+
+    Deliberately excludes internal filesystem details (``input_path``,
+    ``stored_filename``): the Phase 2 API never leaks absolute server paths.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     id: str
     original_filename: str
-    stored_filename: str | None
-    input_path: str | None
-    duration: float | None
+    #: Extracted / captured media metadata (populated after a Phase 2 upload).
+    file_size: int | None
+    sha256: str | None
+    duration: float | None  # seconds
     width: int | None
     height: int | None
-    fps: float | None
+    fps: float | None  # normalized numeric fps, e.g. 29.97
+    raw_fps: str | None  # original ffprobe value, e.g. "30000/1001"
+    video_codec: str | None
+    audio_codec: str | None
+    container_format: str | None
+    bitrate: int | None
+    has_video: bool | None
+    has_audio: bool | None
     language: Language
     target_duration_seconds: int
     status: ProjectStatus
@@ -92,6 +107,7 @@ class JobOut(BaseModel):
 
 __all__ = [
     "LanguageCode",
+    "TargetDurationSeconds",
     "AVAILABLE_DURATIONS_MINUTES",
     "JobStatus",
     "PipelineStage",

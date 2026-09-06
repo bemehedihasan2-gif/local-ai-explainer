@@ -7,23 +7,53 @@ export type DurationMinutes = 2 | 3 | 4;
 export const LANGUAGES: { code: Language; label: string }[] = [
   { code: "en", label: "English" },
   { code: "hi", label: "Hindi" },
-  { code: "bn", label: "Bengali" },
+  { code: "bn", label: "বাংলা" },
 ];
 
 export const DURATIONS: DurationMinutes[] = [2, 3, 4];
 
+// Keep in sync with backend/app/config.py: allowed_video_extensions.
+export const SUPPORTED_EXTENSIONS = [
+  ".mp4",
+  ".mkv",
+  ".avi",
+  ".mov",
+  ".webm",
+  ".m4v",
+  ".mpeg",
+  ".mpg",
+  ".ts",
+];
+
+export type ProjectStatus =
+  | "created"
+  | "uploading"
+  | "validating"
+  | "ready"
+  | "queued"
+  | "processing"
+  | "completed"
+  | "failed";
+
 export interface Project {
   id: string;
   original_filename: string;
-  stored_filename: string | null;
-  input_path: string | null;
-  duration: number | null;
+  file_size: number | null;
+  sha256: string | null;
+  duration: number | null; // seconds
   width: number | null;
   height: number | null;
-  fps: number | null;
+  fps: number | null; // normalized, e.g. 29.97
+  raw_fps: string | null; // e.g. "30000/1001"
+  video_codec: string | null;
+  audio_codec: string | null;
+  container_format: string | null;
+  bitrate: number | null;
+  has_video: boolean | null;
+  has_audio: boolean | null;
   language: Language;
   target_duration_seconds: number;
-  status: string;
+  status: ProjectStatus;
   progress: number;
   error_message: string | null;
   created_at: string;
@@ -35,6 +65,15 @@ export interface CreateProjectPayload {
   language: Language;
   target_duration_minutes: DurationMinutes;
 }
+
+export type UploadProgress = {
+  /** Bytes sent so far (from the browser, network %). */
+  loaded: number;
+  /** Total bytes when known. */
+  total: number | null;
+  /** 0-100 percentage of the transfer (null until the total is known). */
+  percent: number | null;
+};
 
 export interface FfmpegInfo {
   available: boolean;
@@ -61,7 +100,12 @@ export interface SystemStatus {
     directories: { name: string; path: string; exists: boolean; writable: boolean }[];
   };
   concurrency: { heavy_jobs: number };
-  limits: { max_upload_size_mb: number };
+  limits: {
+    max_upload_size_mb: number;
+    upload_chunk_size_bytes: number;
+    ffprobe_timeout_seconds: number;
+    allowed_video_extensions: string[];
+  };
   phase: string;
   message: string;
 }

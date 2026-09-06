@@ -1,8 +1,15 @@
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
-import { api, ApiError } from "./api";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type DragEvent,
+} from "react";
+import { api, ApiError, uploadVideo } from "./api";
 import {
   DURATIONS,
   LANGUAGES,
+  SUPPORTED_EXTENSIONS,
   type DurationMinutes,
   type Language,
   type Project,
@@ -21,6 +28,9 @@ const LANGUAGE_LABEL: Record<Language, string> = {
 
 const STATUS_LABEL: Record<string, string> = {
   created: "Created",
+  uploading: "Uploading",
+  validating: "Validating",
+  ready: "Ready",
   queued: "Queued",
   processing: "Processing",
   completed: "Completed",
@@ -34,6 +44,7 @@ interface Notice {
 }
 
 type Connection = "loading" | "ok" | "degraded" | "offline";
+type UploadStage = "idle" | "uploading" | "failed" | "ready";
 
 function shortId(id: string): string {
   return id.length > 8 ? id.slice(0, 8) : id;
@@ -49,17 +60,31 @@ function formatWhen(iso: string): string {
 
 function fileSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function clock(seconds: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds)) return "—";
+  const whole = Math.round(seconds);
+  const m = Math.floor(whole / 60);
+  const s = whole % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function extensionOf(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot).toLowerCase() : "";
 }
 
 /* ------------------------------------------------------------------ */
 /*  Pipeline roadmap (mirrors docs/architecture.md)                    */
 /* ------------------------------------------------------------------ */
 
-const PIPELINE: { name: string; phase: string }[] = [
-  { name: "Video Upload", phase: "Phase 2" },
-  { name: "Preprocessing", phase: "Phase 2" },
-  { name: "Scene Detection", phase: "Phase 4" },
+const PIPELINE: { name: string; phase: string; done?: boolean }[] = [
+  { name: "Video Upload", phase: "Phase 2", done: true },
+  { name: "Preprocessing", phase: "Phase 3" },
+  { name: "Scene Detection", phase: "Phase 3" },
   { name: "Speech-to-Text", phase: "Phase 3" },
   { name: "OCR", phase: "Phase 4" },
   { name: "Vision Understanding", phase: "Phase 4" },
@@ -83,12 +108,17 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
 
-  const [fileName, setFileName] = useState<string | null>(null);
-  const [fileMeta, setFileMeta] = useState<string | null>(null);
+  const [pickedFile, setPickedFile] = useState<File | null>(null);
+  const [pickError, setPickError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
   const [language, setLanguage] = useState<Language>("en");
   const [duration, setDuration] = useState<DurationMinutes>(3);
 
-  const [generating, setGenerating] = useState(false);
+  const [uploadStage, setUploadStage] = useState<UploadStage>("idle");
+  const [uploadPercent, setUploadPercent] = useState<number | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [view, setView] = useState<Project | null>(null);
+
   const [busyDelete, setBusyDelete] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -112,7 +142,7 @@ export default function App() {
             : {
                 kind: "warn",
                 title: "FFmpeg not detected",
-                body: sys.ffmpeg.setup_hint ?? "Install FFmpeg to enable video processing in later phases.",
+                body: `${sys.ffmpeg.setup_hint ?? "Install FFmpeg to validate videos."} Videos cannot be validated until FFmpeg (ffprobe) is installed.`,
               },
         );
       } catch {
@@ -141,52 +171,120 @@ export default function App() {
     }
   };
 
-  const pickFile = (file: File | undefined) => {
+  /* ---- file picking (click + drag & drop) ------------------------ */
+
+  const acceptFile = (file: File | undefined) => {
+    setUploadError(null);
+    setPickError(null);
+    setView(null);
+    setUploadStage("idle");
+    setUploadPercent(null);
     if (!file) return;
-    setFileName(file.name);
-    setFileMeta(fileSize(file.size));
+
+    const ext = extensionOf(file.name);
+    if (!SUPPORTED_EXTENSIONS.includes(ext)) {
+      setPickError(
+        `"${file.name}" is not a supported video. Use ${SUPPORTED_EXTENSIONS.join(", ")}. The backend validates again after upload.`,
+      );
+      return;
+    }
+    if (file.size === 0) {
+      setPickError(`"${file.name}" is empty (0 bytes) — it cannot be a video.`);
+      return;
+    }
+    setPickedFile(file);
   };
 
   const onFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    pickFile(event.target.files?.[0]);
+    acceptFile(event.target.files?.[0]);
+    event.target.value = ""; // allow re-selecting the same file later
   };
 
-  const generate = async () => {
-    setGenerating(true);
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragging(false);
+    acceptFile(event.dataTransfer.files?.[0]);
+  };
+
+  const clearFile = () => {
+    setPickedFile(null);
+    setPickError(null);
+    if (fileInput.current) fileInput.current.value = "";
+  };
+
+  /* ---- upload & validate ----------------------------------------- */
+
+  const uploading = uploadStage === "uploading";
+
+  const startUpload = async () => {
+    if (!pickedFile) return;
+    setUploadStage("uploading");
+    setUploadPercent(0);
+    setUploadError(null);
     setNotice(null);
     try {
-      const created = await api.createProject({
-        original_filename: fileName,
+      const project = await uploadVideo({
+        file: pickedFile,
         language,
-        target_duration_minutes: duration,
+        targetDurationSeconds: duration * 60,
+        onProgress: (progress) => setUploadPercent(progress.percent),
       });
-      setProjects((prev) => [created, ...prev.filter((p) => p.id !== created.id)]);
+      setUploadStage("ready");
+      setUploadPercent(100);
+      setView(project);
+      setPickedFile(null);
       setNotice({
         kind: "info",
-        title: "Project registered — processing arrives in Phase 2",
-        body: `Project ${shortId(created.id)} was created (${LANGUAGE_LABEL[created.language]}, ${duration} min). In Phase 2 the Generate button will upload the video, analyze it, and run the real AI pipeline end-to-end.`,
+        title: "Video ready — validated & fingerprinted",
+        body: `FFprobe confirmed "${project.original_filename}" (${clock(project.duration)}, ${project.width}×${project.height}). The AI explainer pipeline connects to ready videos in Phase 3+.`,
       });
+      void refreshProjects();
     } catch (err) {
       const message = err instanceof ApiError ? err.message : String(err);
-      setNotice({
-        kind: "error",
-        title: "Could not create the project",
-        body: message,
-      });
-    } finally {
-      setGenerating(false);
+      setUploadStage("failed");
+      setUploadError(message);
+      if (err instanceof ApiError && err.code === "duplicate_video") {
+        setNotice({
+          kind: "warn",
+          title: "Duplicate video detected",
+          body: message,
+        });
+      } else {
+        setNotice({ kind: "error", title: "Upload failed", body: message });
+      }
+      void refreshProjects(); // FAILED rows become visible in history
+    }
+  };
+
+  const generate = (project: Project) => {
+    setNotice({
+      kind: "info",
+      title: "Generation is planned for the next phases",
+      body: `"${project.original_filename}" is ready and validated. Script generation, narration (TTS), subtitles and rendering arrive in Phases 3-6 — no fake processing is run here.`,
+    });
+  };
+
+  /* ---- history ---------------------------------------------------- */
+
+  const openProject = async (project: Project) => {
+    setView(project);
+    try {
+      setView(await api.getProject(project.id)); // freshest metadata
+    } catch {
+      // keep the row we already have
     }
   };
 
   const removeProject = async (project: Project) => {
     const ok = window.confirm(
-      `Delete project "${project.original_filename}"? This removes its record and any job history.`,
+      `Delete project "${project.original_filename}"?\nThis removes the database record AND its stored video files.`,
     );
     if (!ok) return;
     setBusyDelete(project.id);
     try {
       await api.deleteProject(project.id);
       setProjects((prev) => prev.filter((p) => p.id !== project.id));
+      setView((current) => (current?.id === project.id ? null : current));
     } catch (err) {
       const message = err instanceof ApiError ? err.message : String(err);
       setNotice({ kind: "error", title: "Delete failed", body: message });
@@ -228,40 +326,72 @@ export default function App() {
           )}
 
           <div className="layout mt-12">
-            {/* ---------- Left: create panel ---------- */}
+            {/* ---------- Left: upload flow ---------- */}
             <section className="card">
               <h2>New explanation</h2>
               <p className="hint">
-                Pick a video, language and length. <span className="phase-tag">Phase 1</span>{" "}
-                registers the project; upload + analysis connect in Phase 2.
+                Select a video, pick language and target length, then upload.{" "}
+                <span className="phase-tag">Phase 2</span> streams the file, fingerprints
+                it (SHA-256) and validates it with FFprobe.
               </p>
 
               <input
                 ref={fileInput}
                 type="file"
-                accept="video/*"
+                accept={SUPPORTED_EXTENSIONS.join(",")}
                 style={{ display: "none" }}
                 onChange={onFileChange}
               />
-              <button
-                type="button"
-                className={`dropzone ${fileName ? "has-file" : ""}`}
-                onClick={() => fileInput.current?.click()}
-                disabled={offline}
+              <div
+                className={`dropzone dropzone-box ${pickedFile ? "has-file" : ""} ${dragging ? "dragging" : ""}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => !uploading && fileInput.current?.click()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    fileInput.current?.click();
+                  }
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  setDragging(true);
+                }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={onDrop}
               >
-                {fileName ? (
+                {pickedFile ? (
                   <>
-                    <div className="file-name">{fileName}</div>
-                    <div className="meta">{fileMeta} — selected locally, upload in Phase 2</div>
+                    <div className="file-name">{pickedFile.name}</div>
+                    <div className="meta">
+                      {fileSize(pickedFile.size)} — ready to upload · drag another file to replace
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-sm mt-8"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        clearFile();
+                      }}
+                    >
+                      Remove file
+                    </button>
                   </>
                 ) : (
                   <>
                     <div className="big">⬆</div>
-                    <div>Click to choose a video file</div>
-                    <div className="meta">Movies, gameplay, tutorials, lectures, sports, screen recordings…</div>
+                    <div>Drop a video here or click to browse</div>
+                    <div className="meta">
+                      {SUPPORTED_EXTENSIONS.join(" · ")} — max {system?.limits.max_upload_size_mb ?? "—"} MB
+                    </div>
                   </>
                 )}
-              </button>
+              </div>
+              {pickError && (
+                <p className="field-error" role="alert">
+                  {pickError}
+                </p>
+              )}
 
               <div className="field mt-12">
                 <label htmlFor="language-group">Narration language</label>
@@ -274,6 +404,7 @@ export default function App() {
                         value={lang.code}
                         checked={language === lang.code}
                         onChange={() => setLanguage(lang.code)}
+                        disabled={uploading}
                       />
                       <span>{lang.label}</span>
                     </label>
@@ -292,47 +423,81 @@ export default function App() {
                         value={minutes}
                         checked={duration === minutes}
                         onChange={() => setDuration(minutes)}
+                        disabled={uploading}
                       />
                       <span>
-                        {minutes} min<small>≈ {minutes * 150} word script</small>
+                        {minutes} min<small>≈ {minutes * 60} s narration target</small>
                       </span>
                     </label>
                   ))}
                 </div>
               </div>
 
+              {uploadStage === "uploading" && (
+                <div className="upload-progress" role="progressbar" aria-valuenow={uploadPercent ?? 0}>
+                  <div className="flex-between">
+                    <strong>Uploading & validating…</strong>
+                    <span className="muted">{uploadPercent == null ? "—" : `${uploadPercent}%`}</span>
+                  </div>
+                  <span className="progress-track">
+                    <i style={{ width: `${uploadPercent ?? 0}%` }} />
+                  </span>
+                  <p className="hint">
+                    Streaming to disk — the file is never loaded fully into memory. FFprobe
+                    validation follows automatically.
+                  </p>
+                </div>
+              )}
+
+              {uploadStage === "failed" && (
+                <p className="field-error mt-12" role="alert">
+                  {uploadError ?? "Upload failed."}
+                </p>
+              )}
+
               <button
                 type="button"
                 className="btn btn-primary"
-                onClick={() => void generate()}
-                disabled={generating || offline}
+                onClick={() => void startUpload()}
+                disabled={!pickedFile || uploading || offline || Boolean(pickError)}
               >
-                {generating ? "Registering…" : "Generate explanation"}
+                {uploading
+                  ? "Uploading…"
+                  : uploadStage === "ready"
+                    ? "Upload another video"
+                    : "Upload & validate video"}
               </button>
               <p className="hint" style={{ marginTop: 10, marginBottom: 0 }}>
-                Phase 1 note: the full AI pipeline (analyze → script → narration →
-                subtitles → render) is implemented in later phases. No fake results are
-                produced here.
+                Phase 2 does not start AI processing — no analysis, no narration, no fake
+                results. Generation connects to ready videos in later phases.
               </p>
             </section>
 
-            {/* ---------- Right: status + history ---------- */}
+            {/* ---------- Right: status + details ---------- */}
             <div className="stack">
               {system && <SystemCard system={system} />}
+
+              {view && (
+                <ReadyVideoCard
+                  project={view}
+                  canGenerate={view.status === "ready"}
+                  onGenerate={() => generate(view)}
+                />
+              )}
 
               <section className="card">
                 <div className="flex-between">
                   <h2>Pipeline roadmap</h2>
                   <span className="chip-status">
-                    <span className="dot" /> interface-ready
+                    <span className="dot" /> upload engine live
                   </span>
                 </div>
                 <ul className="pipeline">
                   {PIPELINE.map((step, i) => (
-                    <li key={step.name}>
+                    <li key={step.name} className={step.done ? "done" : ""}>
                       <span className="num">{i + 1}</span>
                       <span className="name">{step.name}</span>
-                      <span className="when">{step.phase}</span>
+                      <span className="when">{step.done ? "✓ done" : step.phase}</span>
                     </li>
                   ))}
                 </ul>
@@ -351,7 +516,7 @@ export default function App() {
             {projects.length === 0 ? (
               <div className="empty">
                 {projectsLoaded
-                  ? "No projects yet. Create your first project on the left."
+                  ? "No projects yet. Upload your first video on the left."
                   : "Loading projects…"}
               </div>
             ) : (
@@ -359,46 +524,60 @@ export default function App() {
                 <table>
                   <thead>
                     <tr>
-                      <th>ID</th>
                       <th>File</th>
-                      <th>Language</th>
+                      <th>Lang</th>
                       <th>Length</th>
+                      <th>Resolution</th>
+                      <th>FPS</th>
+                      <th>Audio</th>
                       <th>Status</th>
-                      <th>Progress</th>
                       <th>Created</th>
                       <th />
                     </tr>
                   </thead>
                   <tbody>
                     {projects.map((project) => (
-                      <tr key={project.id}>
-                        <td className="mono">{shortId(project.id)}</td>
+                      <tr key={project.id} className={view?.id === project.id ? "row-open" : ""}>
                         <td className="filename" title={project.original_filename}>
                           {project.original_filename}
                         </td>
                         <td>{LANGUAGE_LABEL[project.language] ?? project.language}</td>
-                        <td>{Math.round(project.target_duration_seconds / 60)} min</td>
+                        <td>{clock(project.duration)}</td>
+                        <td className="muted">
+                          {project.width && project.height
+                            ? `${project.width}×${project.height}`
+                            : "—"}
+                        </td>
+                        <td className="muted">
+                          {project.fps != null ? project.fps.toFixed(project.fps % 1 === 0 ? 0 : 2) : "—"}
+                        </td>
+                        <td className="muted">
+                          {project.has_audio == null ? "—" : project.has_audio ? "♪ yes" : "no audio"}
+                        </td>
                         <td>
                           <span className={`tag tag-${project.status}`}>
                             {STATUS_LABEL[project.status] ?? project.status}
                           </span>
                         </td>
-                        <td>
-                          <span className="progress-bar">
-                            <i style={{ width: `${project.progress}%` }} />
-                          </span>{" "}
-                          <span className="muted">{Math.round(project.progress)}%</span>
-                        </td>
                         <td className="muted">{formatWhen(project.created_at)}</td>
                         <td>
-                          <button
-                            type="button"
-                            className="btn-danger"
-                            disabled={busyDelete === project.id}
-                            onClick={() => void removeProject(project)}
-                          >
-                            {busyDelete === project.id ? "…" : "Delete"}
-                          </button>
+                          <div className="row-actions">
+                            <button
+                              type="button"
+                              className="btn-sm-link"
+                              onClick={() => void openProject(project)}
+                            >
+                              {view?.id === project.id ? "Open" : "View"}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-danger"
+                              disabled={busyDelete === project.id}
+                              onClick={() => void removeProject(project)}
+                            >
+                              {busyDelete === project.id ? "…" : "Delete"}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -409,12 +588,100 @@ export default function App() {
           </section>
 
           <footer className="footer-note">
-            Local AI Video Explainer — Phase 1 foundation. SQLite + FastAPI + FFmpeg architecture;
-            no paid APIs, no cloud models, no secrets in source.
+            Local AI Video Explainer — Phase 2 upload & validation engine. Streaming uploads,
+            SHA-256 fingerprints, FFprobe validation, SQLite metadata. No paid APIs, no cloud
+            models, no secrets in source.
           </footer>
         </>
       )}
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Ready video (metadata) card                                        */
+/* ------------------------------------------------------------------ */
+
+function ReadyVideoCard({
+  project,
+  canGenerate,
+  onGenerate,
+}: {
+  project: Project;
+  canGenerate: boolean;
+  onGenerate: () => void;
+}) {
+  const resolution =
+    project.width && project.height ? `${project.width} × ${project.height}` : "—";
+  const fps =
+    project.fps != null
+      ? `${project.fps.toFixed(project.fps % 1 === 0 ? 0 : 2)}${project.raw_fps ? ` (${project.raw_fps})` : ""}`
+      : "—";
+
+  const rows: { label: string; value: string }[] = [
+    { label: "Duration", value: clock(project.duration) },
+    { label: "Resolution", value: resolution },
+    { label: "FPS", value: fps },
+    {
+      label: "Audio",
+      value:
+        project.has_audio == null
+          ? "—"
+          : project.has_audio
+            ? `${project.audio_codec ?? "track present"}`
+            : "No audio track",
+    },
+    { label: "Video codec", value: project.video_codec ?? "—" },
+    { label: "Container", value: project.container_format ?? "—" },
+    { label: "File size", value: project.file_size != null ? fileSize(project.file_size) : "—" },
+    {
+      label: "Bitrate",
+      value: project.bitrate != null ? `${(project.bitrate / 1000).toFixed(0)} kbps` : "—",
+    },
+    { label: "Language", value: LANGUAGE_LABEL[project.language] ?? project.language },
+    {
+      label: "Target length",
+      value: `${Math.round(project.target_duration_seconds / 60)} min`,
+    },
+    { label: "SHA-256", value: project.sha256 ? shortId(project.sha256) + "…" : "—" },
+    { label: "Uploaded", value: formatWhen(project.created_at) },
+  ];
+
+  return (
+    <section className={`card ${canGenerate ? "ready-card" : ""}`}>
+      <div className="flex-between">
+        <h2>Video ready</h2>
+        <span className={`tag tag-${project.status}`}>
+          {STATUS_LABEL[project.status] ?? project.status}
+        </span>
+      </div>
+      <p className="hint" style={{ marginTop: -6 }}>
+        {project.original_filename} — validated by FFprobe, ready for the AI pipeline.
+      </p>
+      <div className="kv-grid">
+        {rows.map((row) => (
+          <div className="kv" key={row.label}>
+            <span className="kv-key">{row.label}</span>
+            <span className="kv-value" title={row.value}>
+              {row.value}
+            </span>
+          </div>
+        ))}
+      </div>
+      <button
+        type="button"
+        className="btn btn-primary"
+        onClick={onGenerate}
+        disabled={!canGenerate}
+        title={
+          canGenerate
+            ? ""
+            : "Generation connects to videos whose validation has finished."
+        }
+      >
+        Generate explanation {canGenerate ? "" : "(pending ready video)"}
+      </button>
+    </section>
   );
 }
 
@@ -441,36 +708,18 @@ function StatusChip({ connection }: { connection: Connection }) {
 
 function SystemCard({ system }: { system: SystemStatus }) {
   const rows = [
+    { label: "Backend", value: `${system.application.name} v${system.application.version}` },
+    { label: "Python", value: `${system.python.implementation} ${system.python.version}` },
+    { label: "SQLite", value: system.sqlite.available ? `v${system.sqlite.version} — ready` : "unavailable" },
+    { label: "Database", value: system.database.reachable ? "connected & initialized" : "unreachable" },
     {
-      label: "Backend",
-      value: `${system.application.name} v${system.application.version}`,
+      label: "FFmpeg / FFprobe",
+      value: system.ffmpeg.available
+        ? `ready (${system.ffmpeg.ffmpeg.version ?? "?"})`
+        : "not installed — uploads will be rejected",
     },
-    {
-      label: "Python",
-      value: `${system.python.implementation} ${system.python.version}`,
-    },
-    {
-      label: "SQLite",
-      value: system.sqlite.available ? `v${system.sqlite.version} — ready` : "unavailable",
-    },
-    {
-      label: "Database",
-      value: system.database.reachable ? "connected & initialized" : "unreachable",
-    },
-    {
-      label: "FFmpeg",
-      value: system.ffmpeg.ffmpeg.available
-        ? `v${system.ffmpeg.ffmpeg.version ?? "?"} — ready`
-        : "not installed (see setup hint)",
-    },
-    {
-      label: "Heavy jobs",
-      value: `${system.concurrency.heavy_jobs} at a time`,
-    },
-    {
-      label: "Max upload",
-      value: `${system.limits.max_upload_size_mb} MB`,
-    },
+    { label: "Max upload", value: `${system.limits.max_upload_size_mb} MB` },
+    { label: "Supported", value: system.limits.allowed_video_extensions.join(" ") },
   ];
 
   return (

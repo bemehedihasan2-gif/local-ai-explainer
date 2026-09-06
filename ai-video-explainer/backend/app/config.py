@@ -47,7 +47,7 @@ class Settings(BaseSettings):
 
     # Application -------------------------------------------------------
     app_name: str = "Local AI Video Explainer"
-    app_version: str = "0.1.0"
+    app_version: str = "0.2.0"
     environment: str = "development"
 
     # Servers -----------------------------------------------------------
@@ -59,12 +59,23 @@ class Settings(BaseSettings):
     )
 
     # Limits & concurrency ----------------------------------------------
-    max_upload_size_mb: int = 2048
+    #: Maximum single upload size in MB (enforced during streaming upload).
+    max_upload_size_mb: int = 4096
+    #: Upload is streamed to disk in chunks of this many bytes. 1 MiB keeps
+    #: per-request memory near zero even for multi-GB videos.
+    upload_chunk_size: int = 1024 * 1024
+    #: Video containers accepted by the upload engine (extension allowlist).
+    #: Values are normalized (lowercase, leading dot) by the validator.
+    allowed_video_extensions: list[str] = [
+        ".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".mpeg", ".mpg", ".ts",
+    ]
     processing_concurrency: int = 1  # one heavy video job at a time (8 GB RAM)
 
     # FFmpeg -------------------------------------------------------------
     ffmpeg_path: Path | None = None  # None -> discover on PATH
     ffprobe_path: Path | None = None
+    #: Upper bound for a single ffprobe invocation on a large/corrupt file.
+    ffprobe_timeout_seconds: int = 60
 
     # Storage (relative -> resolved against base_dir by the validator) ---
     base_dir: Path = PROJECT_ROOT
@@ -108,6 +119,34 @@ class Settings(BaseSettings):
             raise ValueError("max_upload_size_mb must be >= 1")
         return value
 
+    @field_validator("upload_chunk_size")
+    @classmethod
+    def _chunk_size_positive(cls, value: int) -> int:
+        if value < 1024:
+            raise ValueError("upload_chunk_size must be at least 1 KiB")
+        return value
+
+    @field_validator("ffprobe_timeout_seconds")
+    @classmethod
+    def _ffprobe_timeout_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("ffprobe_timeout_seconds must be >= 1")
+        return value
+
+    @field_validator("allowed_video_extensions")
+    @classmethod
+    def _normalize_extensions(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for ext in value:
+            ext = ext.strip().lower()
+            if not ext.startswith("."):
+                ext = f".{ext}"
+            if ext not in normalized:
+                normalized.append(ext)
+        if not normalized:
+            raise ValueError("allowed_video_extensions must not be empty")
+        return normalized
+
     @field_validator("log_level")
     @classmethod
     def _log_level_known(cls, value: str) -> str:
@@ -137,6 +176,10 @@ class Settings(BaseSettings):
         return self
 
     # Convenience ---------------------------------------------------------
+    @property
+    def max_upload_size_bytes(self) -> int:
+        return self.max_upload_size_mb * 1024 * 1024
+
     @property
     def storage_directories(self) -> dict[str, Path]:
         """Named managed directories, in the order used by system status."""

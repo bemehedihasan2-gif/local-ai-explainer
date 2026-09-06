@@ -16,14 +16,14 @@ from app.utils.paths import safe_join, sanitize_filename
 
 
 def test_every_registered_service_refuses_to_fake_work(settings) -> None:
-    """Phase 1 rule: stubs raise, they never return fake AI results."""
+    """Phase 2 rule: AI stubs raise, they never return fake AI results."""
     assert REGISTRY  # non-empty registry
     ctx = PipelineContext(project_id="abc", settings=settings)
     for service in instantiate(settings):
         with pytest.raises(NotInPhase1Error) as exc_info:
             asyncio.run(service.execute(ctx))
         message = str(exc_info.value)
-        assert "Phase 1" in message and service.name in message
+        assert service.name in message and "planned for" in message
         assert "No real processing was performed" in message
 
 

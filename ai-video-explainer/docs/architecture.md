@@ -15,25 +15,72 @@ video is being read, no full video is ever held in RAM, heavy work is
 file/stream based, and only **one heavy processing job runs at a time**
 (`PROCESSING_CONCURRENCY=1`, enforced by design + future worker).
 
-## 2. Current Phase 1 architecture
+## 2. Current Phase 2 architecture
 
 ```
 frontend (React/Vite/TS)                  backend (FastAPI, Python 3)
-  UI: upload area (Phase 2),       ─────▶ app/api        REST endpoints
-  language/duration, Generate,              ├─ health         /api/health
-  system status, pipeline                    ├─ projects      /api/projects…
-  roadmap, history table                     └─ (jobs reserved for later)
-       │
-       ▼                               app/services    ffmpeg detection,
-  Vite dev proxy /api ──▶ :8000                       storage, cleanup
-                                       app/database    SQLite (WAL, FK on)
+  drag&drop upload UI,              ─────▶ app/api        REST endpoints
+  real progress %, metadata card,           ├─ health         /api/health
+  history + details, roadmap                 ├─ projects      /api/projects…
+       │                                     └─ upload        POST /api/projects/upload
+       ▼                               app/services    uploads (streaming,
+  Vite dev proxy /api ──▶ :8000                       sha256, dedupe, statuses),
+                                                       ffmpeg detection, storage
+                                       app/video       probe.py (FFprobe metadata
+                                       │                  + validation rules)
+                                       ▼
+                                       app/database    SQLite (WAL, FK on,
+                                       │                  additive migration)
+                                       │              data/projects/<id>/input|temp|output
                                        app/models      pydantic schemas
                                        app/utils       errors/logging/paths
-                                       app/ai + app/video  pipeline stubs
+                                       app/ai          pipeline stubs (unchanged)
 ```
 
-Runtime state is stored in two SQLite tables (`projects`,
-`processing_jobs`); large data always lives on disk under `data/`.
+Runtime state: `projects` rows carry all validated media metadata; large data
+always lives on disk under `data/projects/<id>/` (never RAM).
+
+### 2a. Phase 2 upload & validation flow
+
+```
+User selects video
+      │
+      ▼
+Frontend upload (multipart, XHR progress %)
+      │
+      ▼
+Backend streaming upload  (1 MiB chunks, never full file in RAM)
+      │        cumulative size check  → 413 upload_too_large
+      │        streaming SHA-256 computed while writing
+      ▼
+Security validation  (extension allowlist, sanitized internal filename,
+      │   traversal-proof path under data/projects/<id>/input/)
+      ▼
+File saved to project storage   (projects/<id>/input/<id-prefix>.<ext>)
+      │
+      ▼
+Duplicate check  (same SHA-256 exists?)  → 409 duplicate_video
+      │
+      ▼
+FFprobe metadata extraction  (duration, width/height, fps + raw rational,
+      │   video/audio codecs, container, bitrate, file size, has_audio)
+      ▼
+SQLite project update   (status READY, progress 100, metadata stored)
+      │
+      ▼
+Project status = READY
+      │
+      ▼
+Frontend displays metadata  (duration, resolution, FPS, audio, codec, …)
+```
+
+Failure at any point marks the project **FAILED** with a readable
+`error_message`, removes the partial file/folder and returns a clean error
+code. Videos are only **READY** after FFprobe confirms a real video stream,
+a valid duration and usable dimensions (audio is optional).
+
+Statuses: `uploading` (byte-based 0-90%) → `validating` (90%) → `ready` (100%)
+or `failed`. Progress is honest: sub-stage percentages are never invented.
 
 ## 3. Future end-to-end pipeline
 
@@ -67,14 +114,14 @@ Video Upload ──▶ Preprocessing ──▶ Scene Detection ──▶ Speech-
                         Quality Control (duration, audio level, subtitle sync)
 ```
 
-### Stage ownership & service interfaces (Phase 1 ships stubs)
+### Stage ownership & service interfaces (Phase 2: upload real, AI stages stubbed)
 
-| # | Stage                  | Service class (module)          | Planned | Local/zero-cost approach (candidate, evaluated later) |
+| # | Stage                  | Service class (module)          | Planned | Local/zero-cost approach |
 |---|------------------------|----------------------------------|---------|-------------------------------------------------------|
-| 1 | Upload                 | API layer (`api/`)               | P2      | Streaming multipart → `data/uploads/`, size/type checks |
-| 2 | Preprocessing          | (added P2)                       | P2      | FFmpeg stream copy / normalization to scratch files |
-| 3 | Scene detection        | (added P4)                       | P4      | FFmpeg scene filter + frame sampling, on-disk frames |
-| 4 | Speech-to-text         | `ai/stt.py`                      | P3      | faster-whisper small, int8, CPU, en/hi/bn |
+| 1 | Upload                 | `services/uploads.py` **done P2** | P2 ✅   | Streaming multipart → `projects/<id>/input/`, SHA-256, FFprobe validation |
+| 2 | Preprocessing          | (added P3)                       | P3      | FFmpeg stream copy / normalization to scratch files |
+| 3 | Speech-to-text         | `ai/stt.py`                      | P3      | faster-whisper small, int8, CPU, en/hi/bn |
+| 4 | Scene detection        | (added P4)                       | P4      | FFmpeg scene filter + frame sampling, on-disk frames |
 | 5 | OCR                    | `ai/ocr.py`                      | P4      | Lightweight ONNX OCR (RapidOCR class), sampled frames |
 | 6 | Vision understanding   | `ai/vision.py`                   | P4      | Small open VLM (Q4), sampled keyframes only |
 | 7 | Story understanding    | `ai/story.py`                    | P4      | Small CPU LLM (llama.cpp Q4) over compact stage text |
@@ -86,9 +133,10 @@ Video Upload ──▶ Preprocessing ──▶ Scene Detection ──▶ Speech-
 | 13 | FFmpeg rendering       | `video/renderer.py`              | P5      | FFmpeg filter graph, memory-bounded encode |
 | 14 | Quality control        | (added P6)                       | P6      | Re-probe duration/audio/ocr subtitle spot check |
 
-All stage classes extend `PipelineService` (`ai/base.py`), are registered in
-`ai/registry.py`, and **raise `NotInPhase1Error`** — an orchestrator can later
-run them uniformly; the API does not pretend work happened.
+All AI stage classes extend `PipelineService` (`ai/base.py`), are registered
+in `ai/registry.py`, and **raise a controlled not-implemented error** — an
+orchestrator can later run them uniformly; the API never pretends work
+happened. Upload (`services/uploads.py`) is the first *real* stage.
 
 ### Orchestration plan (from Phase 3)
 
@@ -112,18 +160,21 @@ run them uniformly; the API does not pretend work happened.
 
 ## 5. API surface (stable for later phases)
 
-| Method | Endpoint             | Phase 1 behavior                                  |
-| ------ | -------------------- | ------------------------------------------------- |
-| GET    | `/api/health`        | liveness                                          |
-| GET    | `/api/system/status` | python/ffmpeg/sqlite/storage/db + limits, `phase: "1"` |
-| GET    | `/api/projects`      | list                                              |
-| GET    | `/api/projects/{id}` | one project (404 clean JSON on unknown id)        |
-| POST   | `/api/projects`      | create record → 201 + project (files from P2)     |
-| DELETE | `/api/projects/{id}` | 204, cascade removes jobs                         |
+| Method | Endpoint                | Behavior (Phase 2)                                  |
+| ------ | ----------------------- | --------------------------------------------------- |
+| GET    | `/api/health`           | liveness                                            |
+| GET    | `/api/system/status`    | python/ffmpeg/sqlite/storage/db + limits, `phase: "2"` |
+| GET    | `/api/projects`         | list (metadata included)                            |
+| GET    | `/api/projects/{id}`    | one project + status/progress (404 on unknown id)   |
+| POST   | `/api/projects/upload`  | **multipart upload** → streams, validates, 201 READY |
+| POST   | `/api/projects`         | create empty record (legacy)                        |
+| DELETE | `/api/projects/{id}`    | 204; deletes record **and** `projects/<id>/` files   |
 
-Phase 2 additions: `POST /api/projects/{id}/upload` (streaming), then
-`POST /api/projects/{id}/generate` which enqueues the first real pipeline job
-and the UI polls `GET /api/projects/{id}` (reactive progress).
+`POST /api/projects/upload` fields: `file`, `language` (`en|hi|bn`),
+`target_duration` (`120|180|240` seconds). Public responses never include
+internal filesystem paths. `POST /api/projects/{id}/generate` arrives in a
+later phase and the UI will poll `GET /api/projects/{id}` for reactive
+progress.
 
 ## 6. Configuration & security model
 
@@ -138,9 +189,10 @@ and the UI polls `GET /api/projects/{id}` (reactive progress).
 
 - **Phase 1 ✅** architecture, config, SQLite, REST foundation, FFmpeg
   detection, UI, stubs, tests, docs.
-- **Phase 2** upload & validation engine (+ FFprobe metadata, status
-  transitions, progress wiring).
-- **Phase 3** speech-to-text + worker loop + first end-to-end narration path.
+- **Phase 2 ✅** upload & validation engine (streaming storage, SHA-256
+  fingerprint + duplicate detection, FFprobe metadata, status/progress).
+- **Phase 3** preprocessing & analysis asset generation, worker loop,
+  speech-to-text + first end-to-end narration path.
 - **Phase 4** scene detection, OCR, vision, story understanding.
 - **Phase 5** script generation, TTS, subtitle sync, render/mix.
 - **Phase 6** quality control, queue hardening, cleanup + UX polish.

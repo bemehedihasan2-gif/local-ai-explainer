@@ -102,10 +102,14 @@ def system_status(
             },
             "limits": {
                 "max_upload_size_mb": settings.max_upload_size_mb,
+                "upload_chunk_size_bytes": settings.upload_chunk_size,
+                "ffprobe_timeout_seconds": settings.ffprobe_timeout_seconds,
+                "allowed_video_extensions": list(settings.allowed_video_extensions),
             },
-            "phase": "1",
+            "phase": "2",
             "message": (
-                "Phase 1 foundation: API, database and architecture are ready. "
+                "Phase 2 upload & validation engine: videos stream to disk, "
+                "are fingerprinted (SHA-256) and validated with FFprobe. "
                 "Video analysis/generation are connected in later phases."
             ),
         }

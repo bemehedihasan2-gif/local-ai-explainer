@@ -1,5 +1,5 @@
 /* ------------------------------------------------------------------ */
-/*  Local AI Video Explainer — Phase 1 styles                          */
+/*  Local AI Video Explainer — Phase 2 styles                          */
 /*  Desktop-first, dark/light friendly, no frameworks, no animations.  */
 /* ------------------------------------------------------------------ */
 
@@ -225,9 +225,24 @@ button {
   transition: border-color 0.15s ease;
 }
 
+.dropzone-box {
+  cursor: pointer;
+}
+
+.dropzone-box:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .dropzone:hover,
-.dropzone.has-file {
+.dropzone.has-file,
+.dropzone.dragging {
   border-color: var(--accent);
+}
+
+.dropzone.dragging {
+  background: var(--accent-soft);
+  border-style: solid;
 }
 
 .dropzone:disabled {
@@ -247,6 +262,149 @@ button {
 .dropzone .meta {
   color: var(--muted);
   font-size: 12.5px;
+}
+
+.dropzone .mt-8 {
+  margin-top: 10px;
+}
+
+.field-error {
+  border: 1px solid var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13px;
+  margin: 10px 0 14px;
+}
+
+/* ---------- Upload progress ---------- */
+
+.upload-progress {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--panel-2);
+  margin-bottom: 14px;
+}
+
+.upload-progress .hint {
+  margin: 8px 0 0;
+}
+
+.progress-track {
+  display: block;
+  width: 100%;
+  height: 10px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: var(--chip);
+  overflow: hidden;
+}
+
+.progress-track i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+/* ---------- Ready video card ---------- */
+
+.ready-card {
+  border-color: var(--ok);
+}
+
+.kv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px 18px;
+  margin-bottom: 14px;
+}
+
+.kv {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 10px;
+  background: var(--panel-2);
+  border-radius: 8px;
+  min-width: 0;
+}
+
+.kv-key {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.kv-value {
+  font-size: 13.5px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-sm-link {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 4px 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.btn-sm-link:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+tr.row-open td {
+  background: var(--accent-soft);
+}
+
+.tag-uploading,
+.tag-validating {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.tag-ready {
+  background: var(--ok);
+  color: #ffffff;
+}
+
+.tag-created {
+  background: var(--chip);
+  color: var(--muted);
+}
+
+.tag-failed {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.pipeline li.done .name {
+  color: var(--ok);
+}
+
+.pipeline li.done .when {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.pipeline li.done .num {
+  background: var(--ok);
+  color: #ffffff;
 }
 
 .phase-tag {

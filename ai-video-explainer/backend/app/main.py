@@ -88,8 +88,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         description=(
-            "Phase 1 foundation for a local, zero-cost AI video explainer. "
-            "Video analysis and narration arrive in later phases."
+            "Phase 2: upload & validation engine for a local, zero-cost AI "
+            "video explainer. Videos stream to disk and are validated with "
+            "FFprobe; AI analysis and narration arrive in later phases."
         ),
         lifespan=lifespan,
     )
@@ -117,16 +118,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "app": settings.app_name,
             "version": settings.app_version,
-            "phase": 1,
+            "phase": 2,
             "api": {
                 "health": "/api/health",
                 "system_status": "/api/system/status",
                 "projects": "/api/projects",
+                "upload": "/api/projects/upload",
             },
             "docs": "/docs",
         }
 
-    logger.info("Application factory ready (phase 1).")
+    logger.info("Application factory ready (phase 2).")
     return app
 
 

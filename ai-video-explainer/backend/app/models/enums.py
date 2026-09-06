@@ -32,7 +32,10 @@ AVAILABLE_DURATIONS_MINUTES = (2, 3, 4)
 class ProjectStatus(str, Enum):
     """Lifecycle of a project record."""
 
-    CREATED = "created"
+    CREATED = "created"  # record-only projects (Phase 1 POST /api/projects)
+    UPLOADING = "uploading"  # file is being streamed to project storage
+    VALIDATING = "validating"  # FFprobe inspection in progress
+    READY = "ready"  # valid video + metadata stored, awaiting Phase 3+
     QUEUED = "queued"
     PROCESSING = "processing"
     COMPLETED = "completed"

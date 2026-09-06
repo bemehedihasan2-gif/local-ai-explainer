@@ -1,5 +1,6 @@
-# Runtime dependencies - Phase 1 (all free / open source, no cloud APIs)
+# Runtime dependencies - Phase 2 (all free / open source, no cloud APIs)
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.30
+python-multipart>=0.0.9   # multipart/form-data uploads (POST /api/projects/upload)
 pydantic>=2.7,<3.0
 pydantic-settings>=2.2,<3.0
