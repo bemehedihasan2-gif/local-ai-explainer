@@ -1,0 +1,70 @@
+"""Shared enums used across the API, database and future pipeline.
+
+Values are stored in SQLite as the enum ``value`` strings, so they remain
+stable even if display labels change.
+"""
+
+from __future__ import annotations
+
+from enum import Enum
+
+
+class Language(str, Enum):
+    """Supported explanation languages (ISO 639-1 codes)."""
+
+    ENGLISH = "en"
+    HINDI = "hi"
+    BENGALI = "bn"
+
+    @property
+    def label(self) -> str:
+        return {
+            Language.ENGLISH: "English",
+            Language.HINDI: "Hindi",
+            Language.BENGALI: "Bengali",
+        }[self]
+
+
+# Explanation durations offered in the UI, in minutes.
+AVAILABLE_DURATIONS_MINUTES = (2, 3, 4)
+
+
+class ProjectStatus(str, Enum):
+    """Lifecycle of a project record."""
+
+    CREATED = "created"
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class JobStatus(str, Enum):
+    """Lifecycle of a single processing job row."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class PipelineStage(str, Enum):
+    """Ordered stages of the future end-to-end video explanation pipeline."""
+
+    UPLOAD = "upload"
+    PREPROCESS = "preprocess"
+    SCENE_DETECTION = "scene_detection"
+    SPEECH_TO_TEXT = "speech_to_text"
+    OCR = "ocr"
+    VISION_ANALYSIS = "vision_analysis"
+    STORY_UNDERSTANDING = "story_understanding"
+    SCRIPT_GENERATION = "script_generation"
+    TEXT_TO_SPEECH = "text_to_speech"
+    SUBTITLE_GENERATION = "subtitle_generation"
+    AUDIO_MIXING = "audio_mixing"
+    VIDEO_RENDER = "video_render"
+    QUALITY_CONTROL = "quality_control"
+
+    @property
+    def label(self) -> str:
+        return self.value.replace("_", " ").title()

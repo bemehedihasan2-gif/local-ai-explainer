@@ -1,0 +1,39 @@
+# Environment / secrets
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# Runtime data (created automatically)
+data/*
+!data/.gitkeep
+!data/uploads/.gitkeep
+!data/projects/.gitkeep
+!data/temp/.gitkeep
+!data/outputs/.gitkeep
+!data/cache/.gitkeep
+
+logs/*
+!logs/.gitkeep
+
+# Local models - users drop large model files here; keep placeholders only
+models/*
+!models/.gitkeep
+!models/README.md
+
+# OS noise
+Thumbs.db
+.DS_Store
