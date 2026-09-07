@@ -1,10 +1,11 @@
-# Local AI Video Explainer — Phase 6: Local Narration & Subtitles on Your PC
+# Local AI Video Explainer — Phase 7: Final MP4 Render on Your PC
 
 A **local, zero-cost AI video explainer** for Windows: drop in almost any video
 (movie, TV, gameplay, tutorial, lecture, sports, screen recording, social,
 nature …), pick a narration language (English / Hindi / Bengali) and duration
-(2 / 3 / 4 minutes), and the app will eventually produce an original narrated
-MP4 with synchronized subtitles.
+(2 / 3 / 4 minutes), and the app produces an **original narrated MP4** — the
+important scenes, local narration mixed with the original audio, and
+synchronized burned-in subtitles — entirely on your PC.
 
 > **Phase 2** delivered the **upload & validation engine**: videos are
 > streamed to disk (never loaded fully into RAM), fingerprinted with SHA-256,
@@ -26,7 +27,7 @@ MP4 with synchronized subtitles.
 > **ANALYZED** status. Optional local models degrade gracefully
 > (`UNAVAILABLE`/`SKIPPED`), never faked.
 >
-> **Phase 5 (this phase) adds story understanding + duration-aware script
+> **Phase 5 adds story understanding + duration-aware script
 > generation:** an **ANALYZED** project becomes **SCRIPT_READY** through
 > evidence compression, hierarchical **story understanding** (a small local
 > LLM — llama.cpp CLI + a quantized GGUF, never a cloud API), **important
@@ -37,16 +38,27 @@ MP4 with synchronized subtitles.
 > length, chronology, repetition, source-copying and ungrounded-claims
 > checks).
 >
-> **Phase 6 (this phase) voices that script locally:** a **SCRIPT_READY**
-> project becomes **NARRATION_READY** through script segmentation into
-> narration units, per-segment synthesis with a **local Piper TTS engine**
-> (en/hi/bn voices configured manually — never downloaded silently), **real
-> audio timing measured from the generated WAV** (never word-count
-> estimates), a narration timeline that preserves the Phase 5 scene
-> mapping, SRT/VTT subtitles timed to the actual audio, lossless WAV
-> assembly with gentle normalization, and a deterministic 0-100 QC score.
-> Mixing narration with the original audio and the final MP4 render remain
-> Phase 7 — nothing is faked.
+> **Phase 6 voices that script locally:** a **SCRIPT_READY** project becomes
+> **NARRATION_READY** through script segmentation into narration units,
+> per-segment synthesis with a **local Piper TTS engine** (en/hi/bn voices
+> configured manually — never downloaded silently), **real audio timing
+> measured from the generated WAV** (never word-count estimates), a
+> narration timeline that preserves the Phase 5 scene mapping, SRT/VTT
+> subtitles timed to the actual audio, lossless WAV assembly with gentle
+> normalization, and a deterministic 0-100 QC score.
+>
+> **Phase 7 (this phase) renders the final MP4:** a **NARRATION_READY**
+> project becomes **COMPLETED** — the Phase 5 selected scenes and the Phase 6
+> narration timeline are combined into a concrete output plan
+> (`render/video_plan.json`); every selected source range is extracted and
+> normalized (short scenes hold their last frame — no black frames, no dead
+> air); an original-audio track is sliced from the source when it has audio
+> and **ducked under the narration** via sidechain compression; the
+> synchronized subtitles are **burned into the frames** with FFmpeg/libass;
+> and a CPU-first **final.mp4** (libx264, `+faststart`) is encoded and
+> re-probed by a deterministic **final QC** (container / video / audio /
+> duration / subtitles / decode, 0-100). No cloud rendering — nothing is
+> faked.
 >
 > **No paid APIs.** No Claude/OpenAI/Gemini keys. Everything runs on the
 > user's PC, targeting 8 GB RAM, CPU-only, integrated graphics. Only **one
@@ -67,13 +79,14 @@ All storage paths resolve relative to this folder by default.
 | --------- | -------------------------- | ------------------------------------------------------------------- |
 | Python    | 3.10+ (3.11/3.12 preferred) | Backend (FastAPI, SQLite)                                          |
 | Node.js   | 18+ (20/22 preferred)       | Frontend build (Vite)                                              |
-| FFmpeg    | 6.x+ (ffmpeg **and** ffprobe) | **Required from Phase 2** — FFprobe validates every upload; scene detection in Phase 4 |
+| FFmpeg    | 6.x+ (ffmpeg **and** ffprobe) | **Required from Phase 2** — FFprobe validates every upload; scene detection in Phase 4; the final MP4 render + QC in Phase 7 |
 | Tesseract | 5.x (`tesseract` on PATH)   | **Optional** — OCR on scene frames. Without it OCR reports `unavailable` and the rest of the analysis still runs |
 | faster-whisper | Python package + one model | **Optional** — speech-to-text. Without it STT reports `model_download_required` and the rest of the analysis still runs |
 | llama.cpp | `llama-cli` binary | **Required for Phase 5** — story understanding + script generation. Install via `winget install llama.cpp` or the official GitHub release, or set `LLAMA_CPP_PATH` |
 | GGUF model | one small quantized file (~1 GB) | **Required for Phase 5** — e.g. `Qwen2.5-1.5B-Instruct Q4_K_M`. Downloaded once explicitly (never silently); see setup below |
 | Piper | `piper` CLI binary | **Required for Phase 6 narration** — install the official release (or `pip install piper-tts`), or set `TTS_EXECUTABLE_PATH` |
 | Piper voices | `.onnx` + `.onnx.json` per language | **Required for Phase 6** — English/Hindi/Bengali voices. Downloaded once explicitly (never silently); see setup below |
+| Unicode font | e.g. Windows `Nirmala.ttc` or a Noto Sans font | **Optional for Phase 7** — burning Hindi/Bengali subtitles needs a font with those glyphs; set `SUBTITLE_FONT_PATH`/`SUBTITLE_FONT_NAME` (English renders with the default sans font) |
 
 FFmpeg is **not** downloaded automatically. Install it (e.g. `winget install
 ffmpeg` or the gyan.dev build) and ensure `ffmpeg`/`ffprobe` are on PATH, or
@@ -152,6 +165,21 @@ that language shows a setup hint and refuses with `tts_unavailable` /
 → `tts` reports `available`, `executable_available` and per-language voice
 availability so the UI warns before you click.
 
+### Phase 7 — first-run subtitle font setup (only for Hindi/Bengali burn-in, no API key)
+
+Burning subtitles into the final video uses FFmpeg/libass. Latin text renders
+with the default sans-serif font, but **Hindi/Bengali glyphs need a Unicode
+font configured** or the render refuses (never boxes/garbage):
+
+```dotenv
+# In .env - Windows ships Nirmala UI (Devanagari + Bengali); Noto fonts work too.
+SUBTITLE_FONT_PATH=C:\Windows\Fonts\Nirmala.ttc
+# or SUBTITLE_FONT_NAME=Noto Sans Devanagari
+```
+
+`GET /api/system/status` → `render.subtitle_font_configured` reports whether a
+usable font is set, so the **Create final video** panel warns before you click.
+
 ## Supported video formats
 
 *(unchanged from Phase 2)*
@@ -177,32 +205,42 @@ ai-video-explainer/
 │   │   ├── main.py           # app factory + entrypoint (uvicorn app.main:app)
 │   │   ├── config.py         # central settings (.env supported)
 │   │   ├── api/              # health, system status, projects, jobs, thumbnail,
-│   │   │                     #   analyze, analysis, timeline, frames
+│   │   │                     #   analyze, analysis, timeline, frames, scripts,
+│   │   │                     #   narration, render
 │   │   ├── services/         # ffmpeg detection, storage, uploads, preprocess,
-│   │   │                     #   ANALYSIS (orchestrator), TIMELINE (alignment +
-│   │   │                     #   density), worker (single-job queue), cleanup
+│   │   │                     #   analysis (orchestrator), timeline, story/script
+│   │   │                     #   (Phase 5), narration/subtitles/audio (Phase 6),
+│   │   │                     #   render plan + final render (Phase 7),
+│   │   │                     #   worker (single-job queue), cleanup
 │   │   ├── ai/               # stt (faster-whisper), ocr (Tesseract), vision
-│   │   │                     #   (deterministic PIL + optional LocalVisionProvider)
+│   │   │                     #   (deterministic PIL + optional LocalVisionProvider),
+│   │   │                     #   llm (llama.cpp CLI), story, script, tts (Piper)
 │   │   ├── video/            # ffprobe probing (metadata + validation),
-│   │   │                     #   scenes (FFmpeg scene detection + frames)
+│   │   │                     #   scenes (FFmpeg scene detection + frames),
+│   │   │                     #   renderer (Phase 7 final encode)
 │   │   ├── database/         # SQLite connection + schema + migration
 │   │   ├── models/           # pydantic models + enums
 │   │   └── utils/            # errors, structured logging, path safety,
-│   │                         #   fingerprints (analysis idempotency)
-│   ├── tests/                # pytest suite (Phase 1 + 2 + 3 + 4)
+│   │                         #   fingerprints (analysis/session idempotency)
+│   ├── tests/                # pytest suite (Phases 1-7)
 │   ├── requirements.txt
 │   └── requirements-dev.txt
 ├── frontend/                 # React + Vite + TypeScript UI
 │   └── src/                  # App, API client, types, styles
-├── models/                   # local model files (whisper/tiny … Phase 4)
+├── models/                   # local model files (whisper/ … Phase 4, llm/ Phase 5,
+│                             #   voices/ Phase 6)
 ├── data/
 │   ├── projects/             # per project: input/ temp/ output/
 │   │                         #   analysis/ thumbnails/ audio/  (Phase 3)
 │   │                         #   analysis/{metadata,frames}/ (Phase 4)
+│   │                         #   analysis/story/ (Phase 5)
+│   │                         #   subtitles/ audio/narration* (Phase 6)
+│   │                         #   render/ output/final.mp4 (Phase 7)
 │   ├── uploads/  temp/  outputs/  cache/
 ├── logs/                     # app.log + errors.log (auto-rotated)
-├── scripts/                  # Windows .bat + unix helpers (incl. whisper download)
-├── docs/architecture.md      # pipeline design (Phase 2 + 3 + 4 flows)
+├── scripts/                  # Windows .bat + unix helpers (incl. whisper/LLM
+│                             #   downloads + Piper voices)
+├── docs/architecture.md      # pipeline design (Phases 1-7 flows)
 ├── env.example               # copy to .env (no real secrets exist)
 └── README.md
 ```
@@ -235,6 +273,17 @@ Notable knobs:
 | `VISUAL_ANALYSIS_ENABLED` | `true`                          | Deterministic PIL frame metadata toggle   |
 | `TESSERACT_PATH`         | (auto-discover on PATH)         | Absolute binary path if not on PATH      |
 | `FFMPEG_PATH` / `FFPROBE_PATH` | (auto-discover on PATH)     | Absolute binary paths if not on PATH     |
+| `OUTPUT_MAX_WIDTH` / `OUTPUT_MAX_HEIGHT` | `1280` / `720`   | Final-video size cap (downscales only, even pixels) |
+| `OUTPUT_FPS`      | `30`                             | Final-video frame rate (number or `source`) |
+| `VIDEO_CODEC` / `VIDEO_PRESET` / `VIDEO_CRF` | `libx264` / `veryfast` / `23` | CPU-first final encode settings |
+| `ORIGINAL_AUDIO_ENABLED` | `true`                     | Mix (ducked) original audio from the selected ranges |
+| `ORIGINAL_AUDIO_VOLUME` / `NARRATION_AUDIO_VOLUME` | `0.18` / `1.0` | Mix levels |
+| `AUDIO_DUCKING_ENABLED` (+ `_THRESHOLD`/`_RATIO`/`_ATTACK_MS`/`_RELEASE_MS`) | `true` / `0.02` / `6` / `15` / `350` | Narration-driven sidechain ducking of the original audio |
+| `SUBTITLE_BURN_ENABLED` | `true`                       | Burn subtitles into the final frames (libass) |
+| `SUBTITLE_FONT_PATH` / `SUBTITLE_FONT_NAME` | (empty)       | Unicode font for burn-in — required for Hindi/Bengali glyphs |
+| `SUBTITLE_FONT_SIZE` / `SUBTITLE_MARGIN_V` | `20` / `24`     | Burn-in style                           |
+| `RENDER_TAIL_MS` / `RENDER_HOLD_GAP_MAX_MS` | `1200` / `1500` | Narration tail / max held gap (no black frames) |
+| `RENDER_TIMEOUT_SECONDS` | `3600`                      | Upper bound for one render FFmpeg pass  |
 
 ## Windows setup
 
@@ -274,18 +323,19 @@ http://127.0.0.1:5173 — Vite proxies `/api` to the backend, so no CORS setup.
 ```
 
 Tests that need a real encoder generate tiny synthetic videos with FFmpeg and
-**skip gracefully** when FFmpeg is missing; the rest of the suite (Phase 1 + 2
-+ 3 + 4) runs against scripted fake ffmpeg/ffprobe binaries, so it works
-everywhere — including the full preprocess **and analysis** job lifecycles,
-worker serialization, failure paths, STT/OCR/vision service units and
-timeline alignment.
+**skip gracefully** when FFmpeg is missing; the rest of the suite (Phases 1-7)
+runs against scripted fake ffmpeg/ffprobe binaries and fake LLM/TTS/render
+services, so it works everywhere — including the full preprocess → analysis →
+script → narration → **render** job lifecycles, worker serialization, failure
+paths, STT/OCR/vision service units, timeline alignment, render planning and
+final QC.
 
 ## API
 
 | Method | Endpoint                        | Purpose                                   |
 | ------ | ------------------------------- | ----------------------------------------- |
 | GET    | `/api/health`                   | Liveness (app + version)                  |
-| GET    | `/api/system/status`            | Python, FFmpeg, SQLite, storage, DB, limits, **worker state**, **LLM report** |
+| GET    | `/api/system/status`            | Python, FFmpeg, SQLite, storage, DB, limits, **worker state**, **LLM report**, **TTS report**, **render readiness** |
 | GET    | `/api/projects`                 | List projects (metadata included)         |
 | GET    | `/api/projects/{id}`            | One project + current status/progress     |
 | POST   | `/api/projects/upload`          | **Multipart video upload** (below)        |
@@ -310,6 +360,12 @@ timeline alignment.
 | GET    | `/api/projects/{id}/narration/audio` | Streams the assembled `narration.wav` |
 | GET    | `/api/projects/{id}/narration/subtitles?format=srt\|vtt` | Subtitles timed to real audio |
 | GET    | `/api/projects/{id}/narration/segments` | Segment timeline (text/scene ids/times) |
+| POST   | `/api/projects/{id}/render`   | **Queue Phase 7 final render** (idempotent; re-encodes only when inputs changed) |
+| GET    | `/api/projects/{id}/render-status` | Latest render-run summary + live stage |
+| GET    | `/api/projects/{id}/render`   | Final render manifest (relative paths only)      |
+| GET    | `/api/projects/{id}/render-plan` | Output video plan (`render/video_plan.json`)  |
+| GET    | `/api/projects/{id}/render/video` | Streams the final `final.mp4`              |
+| GET    | `/api/projects/{id}/render/subtitles?format=srt\|vtt` | Sidecar subtitles for the final video |
 | DELETE | `/api/projects/{id}`            | Delete record **and** controlled files    |
 
 ### `POST /api/projects/upload`
@@ -370,20 +426,23 @@ Stack traces go to `logs/errors.log` only.
 | `script_ready` | Original explanation ready (en/hi/bn) — awaiting narration   |
 | `narrating`    | Phase 6 worker is synthesizing narration (0 → 100%)          |
 | `narration_ready` | TTS WAV + synced SRT/VTT ready (Phase 6 complete)         |
-| `failed`       | Upload/validation/preprocessing/analysis failed; `error_message` explains |
+| `rendering`    | Phase 7 worker is mixing + rendering the final MP4 (0 → 100%) |
+| `render_failed`| Final render failed; artifacts cleaned, retry from NARRATION_READY |
+| `completed`    | Final MP4 rendered + QC-passed (Phase 7 complete)           |
+| `failed`       | Upload/validation/preprocessing/analysis/story/narration failed; `error_message` explains |
 | `created`      | Record-only project created via the legacy endpoint             |
-| `queued/processing/completed` | Reserved for the future pipeline worker            |
+| `queued/processing` | Reserved for the future pipeline worker                |
 
 On any **upload** failure the partial file is removed, the project folder
 cleaned up, and the record stays `failed` with the error message. On a
 **preprocessing** failure the job is recorded as `failed` with the reason and
 the project **returns to `ready`** (the input video is fine) so you can retry;
-partial assets are removed. Deleting a project removes its database record
-**and** its controlled folder under `data/projects/` (including assets).
-
-On any failure the partial file is removed, the project folder cleaned up, and
-the record stays as `failed` with the error message. Deleting a project removes
-its database record **and** its controlled folder under `data/projects/`.
+partial assets are removed. A **render** failure records the job/run as
+`failed`, clears only the Phase 7 artifacts (render plan, temp clips, partial
+output) and sets the project to `render_failed` — Phases 1-6 data stays
+intact, so **Create final video** can simply be retried. Deleting a project
+removes its database record **and** its controlled folder under
+`data/projects/` (including assets).
 
 ### Duplicate detection
 
@@ -418,6 +477,16 @@ per run with `status` (`queued`/`running`/`completed`/`failed`),
 `processing_seconds`, `warnings`, plus **config/preprocessing fingerprints**
 for idempotency. Transcript/OCR payloads are **never** stored in SQLite —
 they live as JSON files under `analysis/metadata/`.
+
+Phase 5 adds a `script_runs` table (language, target duration, content type,
+selected-scene count, word count, quality score, estimated duration,
+generation fingerprint), Phase 6 adds a `tts_runs` table (voice, audio/subtitle
+paths, measured duration, segment count, quality score, narration
+fingerprint) and Phase 7 adds a `render_runs` table (output path/duration/size,
+QC score, subtitle status, render fingerprint) — all via the same additive
+`migrate_schema`, so databases from earlier phases upgrade in place. Large
+payloads (transcripts, scripts, subtitles, manifests) always stay as JSON
+text files inside the project folder.
 
 ## Phase 3 preprocessing (how it works)
 
@@ -500,9 +569,9 @@ without re-running Whisper/OCR/scenes; changing e.g. `SCENE_THRESHOLD` or
 **Privacy:** nothing leaves the PC — no uploads, no telemetry, no cloud
 inference. Transcript/OCR/visual documents are local analysis artifacts only.
 
-## Frontend (Phase 4)
+## Frontend
 
-The single-page UI runs the full upload → preprocess flow:
+The single-page UI runs the whole pipeline, upload → final MP4:
 
 - drag & drop **or** file picker, with client-side format/size checks
 - language (English / Hindi / **বাংলা**) and target length (2 / 3 / 4 min)
@@ -532,8 +601,25 @@ The single-page UI runs the full upload → preprocess flow:
   button; the **quality check** chips; regenerate controls (language /
   duration) that re-run the backend pipeline; and the scene timeline
   with selected vs. skipped marks
+- when **script_ready** and the narration has not run yet: a **Generate
+  narration** panel — language + voice, with Piper/voice readiness warnings;
+  while **narrating**: honest stage progress (Segmenting script →
+  Synthesizing → Measuring audio → Writing subtitles → Assembling →
+  Quality check); then **Narration ready**: measured duration + QC score
+  chips, a player for `narration.wav`, the synced **subtitles**
+  (SRT/VTT preview + download), the **segment → scene** mapping, and
+  regenerate controls (language / voice)
+- when **narration_ready**: the **Create final video** panel with render
+  readiness (FFmpeg + subtitle-font warnings); while **rendering**: live
+  stage progress (Preparing plan → Extracting clips → Mixing audio →
+  Burning subtitles → Final QC); when **completed**: **Final video ready** —
+  playback + **Download MP4** (plus sidecar SRT/VTT), duration/resolution/
+  codec/size stats, subtitle status (burned or sidecar-only), the **Final
+  QC** chips, warnings, and a **Render again** action (idempotent — inputs
+  must change before anything re-encodes)
 - project history shows status tags incl. `preprocessing`/`prepared`/
-  `analyzing`/`analyzed`/`scripting`/`script_ready`; **View** opens
+  `analyzing`/`analyzed`/`scripting`/`script_ready`/`narrating`/
+  `narration_ready`/`rendering`/`render_failed`/`completed`; **View** opens
   details, **Delete** removes record + files
 
 Backend validation is authoritative — the client checks are only UX.
@@ -601,12 +687,97 @@ setup hint when the local LLM is unavailable, retry after failure:
 hard timeout and exits afterwards — one model in RAM at a time, nothing
 resident between jobs, `PROCESSING_CONCURRENCY=1`.
 
-## Phase 5 limitations (honest)
+## Phase 6 local narration + subtitles (how it works)
 
-- **No final MP4 yet** — Phase 6 ends at **NARRATION_READY**: a real
-  narration WAV plus SRT/VTT subtitles timed to the actual generated audio
-  (never word-count estimates). Mixing narration with the original audio and
-  rendering the final MP4 come in Phase 7.
+`POST /api/projects/{id}/generate-narration` on a **SCRIPT_READY** project
+with `{"language": "en|hi|bn"}` and an optional `voice_id` — idempotent reuse
+when the narration fingerprint (script + language + voice + TTS settings)
+matches, `409` while running, `503` with a setup hint when the local TTS
+engine or that language's voice is unusable, retry after failure:
+
+1. **Script segmentation** — the narration script is split into sentence-ish
+   narration units that keep the Phase 5 section/scene mapping
+   (`services/segmentation.py`).
+2. **Per-segment local TTS** — each unit is synthesized one at a time by the
+   **Piper CLI** subprocess (`ai/tts.py`: arg arrays, no shell, hard timeout,
+   configured en/hi/bn voice; never downloaded silently) into a WAV on disk.
+3. **Real audio timing** — every segment's duration is **measured from its
+   generated WAV**, never estimated from word counts; configured lead-in and
+   between-segment gaps build `audio/narration_timeline.json` (start/end ms +
+   scene ids).
+4. **Subtitles** — SRT and VTT are generated timed to that real audio
+   (UTF-8, per-line/per-caption readability caps).
+5. **Assembly** — the segments are concatenated losslessly with FFmpeg into
+   `audio/narration.wav` and gently normalized to a target level (no
+   clipping).
+6. **Deterministic QC** (`services/narration_qc.py`) — checks audio duration,
+   subtitle/timeline validity and the scene mapping; a documented 0-100 score.
+7. Success → **narration_ready** with the run summary in SQLite. Failure →
+   run/job `failed`, Phase 6 artifacts cleared (Phases 3-5 preserved), project
+   returns to **script_ready** for retry.
+
+## Phase 7 final render (how it works)
+
+`POST /api/projects/{id}/render` on a **NARRATION_READY** (or
+**RENDER_FAILED**) project — no free-form options: rendering is fully
+determined by the stored artifacts plus local render settings, all
+fingerprinted, so identical inputs reuse the existing video without a
+re-encode:
+
+1. **Render planning** (`services/render_plan.py`) — reads Phase 5
+   `analysis/story/selected_scenes.json` and Phase 6
+   `audio/narration_timeline.json` and writes `render/video_plan.json`. The
+   **narration timeline is the master clock**: every narration segment starts
+   at the same absolute millisecond in the output as in the narration, so
+   subtitles/voice never drift from the visuals and the video is never
+   shorter than the narration. Segments are assigned chronologically to the
+   selected scenes; a scene window shorter than its source is played at
+   source speed and then **holds its last frame** (tpad clone), and narration
+   gaps hold the previous scene — **no black frames, no dead air**.
+2. **Clip extraction** — only the planned source ranges are cut from the
+   **original upload** (`-ss`/`-t`, per clip, streamed), normalized once to a
+   common size/fps/pixfmt as H.264 MPEG-TS intermediates. The whole source
+   video is never re-encoded or held in RAM.
+3. **Original audio** — only when the source has audio and
+   `ORIGINAL_AUDIO_ENABLED=true`: one AAC slice per clip window (silence-free,
+   padded to its exact length) is cut and concatenated into an original track.
+4. **Mix** — one final FFmpeg pass maps the video, the original track (if
+   any) and `narration.wav`: narration is normalized to stereo 48 kHz at
+   `NARRATION_AUDIO_VOLUME`; the original audio plays at
+   `ORIGINAL_AUDIO_VOLUME` and is **ducked under the narration** via
+   sidechain compression (`AUDIO_DUCKING_*`); a limiter guards against peaks.
+   When there is no original audio the narration is padded to the full video
+   length so the tail is not silent.
+5. **Subtitle burn-in** — FFmpeg's `subtitles` (libass) filter burns
+   `subtitles/subtitles.srt` with the configured font size/margin/outline;
+   Hindi/Bengali require `SUBTITLE_FONT_PATH`/`SUBTITLE_FONT_NAME` and the
+   render **refuses with a setup message** (never renders tofu boxes).
+6. **Encode** — `libx264` preset/CRF (default `veryfast`/`23`) + AAC 160 kbps
+   stereo 48 kHz with `-movflags +faststart`, written to a temp file and
+   atomically renamed to `output/final.mp4` only on success; every pass has a
+   hard `RENDER_TIMEOUT_SECONDS`.
+7. **Final QC** (`services/final_qc.py`) — the finished file is re-probed
+   with FFprobe: container, video and audio streams must exist; duration must
+   be within tolerance of the render plan and **never shorter than the
+   narration**; frames are spot-decoded at the start/middle/end; the sidecar
+   SRT is sanity-checked. Documented 0-100 weights: container 20%, video 20%,
+   audio 20%, timeline 15%, subtitles 15%, decode 10%. Structural problems
+   raise `FinalQCRejectedError` — a broken file is never delivered.
+8. Success writes `output/final_manifest.json` and
+   `output/final_timeline.json` (source → output mapping), removes
+   `render/temp/`, and the project becomes **completed** (100%) with the QC
+   score in the run row. Failure records the run/job as `failed`, clears only
+   Phase 7 artifacts and sets **render_failed** — Phases 1-6 stay intact and
+   **Create final video** can be retried as-is.
+
+**Resource policy:** the render runs on the same single worker (concurrency
+1); FFmpeg subprocesses are memory-bounded (streamed, never whole-video in
+RAM) and CPU-only — the final pass is the heaviest step and runs with a
+CPU-first x264 preset. Nothing is uploaded; FFprobe/FFmpeg never talk to the
+network.
+
+## Limitations (honest)
+
 - **Voices must be installed manually** — English is one explicit download
   (`scripts/setup_piper_voices.*`); Hindi/Bengali depend on the community
   voices you fetch and configure. Missing voices fail honestly with
@@ -614,20 +785,28 @@ resident between jobs, `PROCESSING_CONCURRENCY=1`.
 - **TTS is slow on this hardware** — one short segment at a time on the
   single worker. A 3-minute narration can take several minutes of synthesis
   on a Ryzen 3 3200G; progress is persisted per stage and retry is safe.
-- **No visual understanding model** — the LLM only sees transcript/OCR
-  text and numeric visual metadata, never the frames themselves. It is
-  explicitly told not to describe visible objects that the evidence does
-  not support.
+- **The final encode is CPU-only** — x264 at ≤ 1280×720 on a Ryzen 3 3200G
+  is not fast: expect minutes (longer for high-resolution sources). Only the
+  selected ranges are decoded, progress is real, and a failed/timed-out pass
+  can simply be retried (temp files are cleaned first).
+- **Hindi/Bengali burn-in needs a Unicode font** — without
+  `SUBTITLE_FONT_PATH`/`SUBTITLE_FONT_NAME` the render refuses with setup
+  instructions instead of burning unusable glyphs.
+- **No visual understanding model** — the LLM only sees transcript/OCR text
+  and numeric visual metadata, never the frames themselves. It is explicitly
+  told not to describe visible objects that the evidence does not support;
+  the render only ever shows real source scenes.
 - Story/script quality depends on the local model: a small quantized GGUF
-  gives good grounding but cannot match a frontier model. The QC stage
-  flags empty, copied, repetitive, out-of-language or ungrounded output;
-  `llm_unavailable` is never faked.
-- The worker queue is in-process: jobs do not survive a backend restart
-  (a queued row would remain `queued`; re-run generate to retry; a stale
-  `scripting` project is auto-recovered to `analyzed` on the next call).
-- Real-FFmpeg integration tests skip when FFmpeg is absent (they run on
-  your PC); the deterministic fake-binary/fake-LLM suite covers the full
-  lifecycle.
+  gives good grounding but cannot match a frontier model. The QC stages flag
+  empty, copied, repetitive, out-of-language or ungrounded output;
+  `llm_unavailable`/`voice_unavailable` are never faked.
+- The worker queue is in-process: jobs do not survive a backend restart (a
+  queued row would remain `queued`; re-run the stage to retry; stale
+  `analyzing`/`scripting`/`narrating`/`rendering` projects auto-recover to
+  `prepared`/`analyzed`/`script_ready`/`narration_ready` on the next call).
+- Real-FFmpeg integration tests skip when FFmpeg is absent (they run on your
+  PC); the deterministic fake-binary/fake-LLM/fake-TTS/fake-render suite
+  covers the full lifecycle.
 
 ## Roadmap
 
@@ -640,14 +819,22 @@ resident between jobs, `PROCESSING_CONCURRENCY=1`.
 4. **Phase 4 (done)** — on-device analysis: scene detection, STT,
    OCR, deterministic visual metadata, timeline alignment + context
    aggregation → ANALYZED.
-5. **Phase 5 (this phase)** — story understanding, important-scene
+5. **Phase 5 (done)** — story understanding, important-scene
    selection, duration-aware script generation (en/hi/bn) with
    deterministic QC → SCRIPT_READY.
 6. **Phase 6 (done)** — local TTS narration (Piper CLI, en/hi/bn voices),
    real-audio segment timing, SRT/VTT subtitles, narration assembly +
    normalization, deterministic audio/timeline/subtitle QC → NARRATION_READY.
-7. **Phase 7** — mix narration with the original audio, render the final MP4
-   (FFmpeg), final QC and polish.
+7. **Phase 7 (this phase)** — render planning (narration-as-master-clock),
+   selected-scene clip extraction, original-audio + narration mix with
+   ducking, subtitle burn-in and the CPU-first final MP4 encode, with a
+   deterministic final QC → COMPLETED.
+
+With Phase 7 the full product loop is complete: upload any supported video,
+pick English/Hindi/Bengali and 2/3/4 minutes, and the app returns a final
+narrated, subtitled MP4 — every step local. Future work (no rewrite needed) is
+polish: optional GPU encode, better local vision models, more voices/languages
+and packaging (installer).
 
 See `docs/architecture.md` for the full pipeline design.
 
@@ -670,7 +857,12 @@ See `docs/architecture.md` for the full pipeline design.
 | Generate shows `llm_unavailable`              | Install llama.cpp (`winget install llama.cpp` or the GitHub release) and/or set `LLAMA_CPP_PATH` in `.env`; restart the backend |
 | Generate shows `model_download_required`      | Run `scripts\download_llm_model.bat` once (no API key, ~1 GB) and/or set `LLAMA_MODEL_PATH`; the app never auto-downloads |
 | Generate fails / empty script                  | Check the QC report (`/api/projects/{id}/script-quality`) and `logs/errors.log`; the project returns to ANALYZED — retry, or raise `LLAMA_MAX_TOKENS` |
-| Project stuck at `preprocessing`/`analyzing`/`scripting` after restart | In-process queue lost the job; restart the stage (a stale analyzing/scripting project auto-recovers) |
+| Generate narration fails (`voice_unavailable`) | Install the voice (`scripts/setup_piper_voices.*`) and/or set `TTS_VOICE_<LANG>`; the project returns to SCRIPT_READY — retry |
+| Render fails / `render_failed`                | Check `logs/errors.log` and the run row (`/api/projects/{id}/render-status`); Phase 7 artifacts are cleaned and Phases 1-6 kept — click **Create final video** again |
+| “Hindi/Bengali burn-in needs a Unicode font”  | Set `SUBTITLE_FONT_PATH` (e.g. `C:\Windows\Fonts\Nirmala.ttc`) or `SUBTITLE_FONT_NAME` in `.env`, restart the backend |
+| Final video has no subtitle text burned in     | Check `SUBTITLE_BURN_ENABLED` (default true) and the `Subtitles` status on the **Final video ready** card |
+| Final encode is very slow                      | Expected on CPU at ≤1280×720; lower `OUTPUT_MAX_WIDTH/HEIGHT` or raise `VIDEO_CRF`; progress is real and retry is safe |
+| Project stuck at `preprocessing`/`analyzing`/`scripting`/`narrating`/`rendering` after restart | In-process queue lost the job; restart the stage (stale runs auto-recover to their retry state on the next call) |
 | Port 8000 busy                                 | Change `BACKEND_PORT` in `.env`                                      |
 
 ## Security foundations

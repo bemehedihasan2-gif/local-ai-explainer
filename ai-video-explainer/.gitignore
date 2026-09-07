@@ -11,6 +11,7 @@ __pycache__/
 htmlcov/
 .venv/
 venv/
+.venv-pkgs/
 
 # Node / frontend
 frontend/node_modules/
