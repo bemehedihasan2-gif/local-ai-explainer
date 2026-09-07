@@ -92,3 +92,79 @@ def test_system_status_reports_capabilities(client: TestClient) -> None:
         assert set(language_status) >= {"voice_id", "available", "configured", "model_available"}
     assert isinstance(tts["voices"], list)
     assert isinstance(tts["settings"]["sample_rate"], int)
+
+
+def test_system_status_dependencies_block_is_machine_readable(client: TestClient) -> None:
+    """Phase 8: flat dependency map - booleans only, no secrets/paths."""
+    deps = client.get("/api/system/status").json()["dependencies"]
+    assert deps["python"] is True
+    for key in ("ffmpeg", "ffprobe", "tesseract", "whisper_model", "llm", "piper"):
+        assert key in deps and isinstance(deps[key], bool)
+    assert set(deps["voices"]) == {"en", "hi", "bn"}
+    assert all(isinstance(v, bool) for v in deps["voices"].values())
+    # Never expose keys/paths/tokens in the dependency report.
+    assert not any("path" in str(k).lower() or "key" in str(k).lower() for k in deps)
+
+
+def test_system_status_never_exposes_absolute_paths(client: TestClient) -> None:
+    """Phase 8: public status redacts machine paths (basenames only)."""
+    body = client.get("/api/system/status").json()
+    ffmpeg = body["ffmpeg"]
+    assert ffmpeg["ffmpeg"]["path"] in (None, "ffmpeg")
+    assert ffmpeg["ffprobe"]["path"] in (None, "ffprobe")
+    # database.path is a plain filename, never an absolute path.
+    assert "/" not in body["database"]["path"] and "\\" not in body["database"]["path"]
+    for entry in body["storage"]["directories"]:
+        rel = str(entry["path"])
+        assert not rel.startswith("/") and ".." not in rel.split("/")
+        assert rel in ("data", "models", "logs") or rel.startswith("data/") or rel == "<local>"
+
+
+def test_preflight_endpoint_works_and_is_honest(client: TestClient) -> None:
+    """Phase 8: pre-flight returns 200 with machine-readable checks.
+
+    In this sandbox FFmpeg is absent, so ``ok`` must be False and the
+    blocking list must name ffmpeg - preflight never claims readiness.
+    """
+    response = client.get("/api/system/preflight", params={"language": "en"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["language"] == "en"
+    assert body["supported_languages"] == sorted(["en", "hi", "bn"])
+    assert isinstance(body["ok"], bool)
+    assert isinstance(body["blocking"], list)
+    assert isinstance(body["messages"], list) and body["messages"]
+
+    checks = body["checks"]
+    for name in ("python", "database", "ffmpeg", "ffprobe", "storage",
+                 "disk_space", "whisper", "tesseract", "llm", "piper",
+                 "voice_en", "subtitle_font"):
+        assert name in checks, name
+        entry = checks[name]
+        assert set(entry) == {"ok", "required", "detail", "setup_hint"}
+        assert isinstance(entry["ok"], bool)
+        assert isinstance(entry["required"], bool)
+        assert isinstance(entry["detail"], str)
+
+    # ffmpeg is not installed in this sandbox: required check must be False
+    # and reported as blocking (honest pre-flight, never a fake PASS).
+    assert checks["ffmpeg"]["ok"] is False
+    assert checks["ffmpeg"]["required"] is True
+    assert "ffmpeg" in body["blocking"]
+    assert body["ok"] is False
+    assert checks["ffmpeg"]["setup_hint"]
+
+
+def test_preflight_rejects_unknown_language(client: TestClient) -> None:
+    response = client.get("/api/system/preflight", params={"language": "xx"})
+    assert response.status_code == 422
+
+
+def test_preflight_hindi_requires_subtitle_font(client: TestClient, settings) -> None:
+    """Phase 8: hi/bn burn-in demands a font - preflight must say so."""
+    response = client.get("/api/system/preflight", params={"language": "hi"})
+    assert response.status_code == 200
+    checks = response.json()["checks"]
+    assert checks["subtitle_font"]["required"] is True
+    assert checks["subtitle_font"]["ok"] is False
+    assert "SUBTITLE_FONT" in checks["subtitle_font"]["setup_hint"]

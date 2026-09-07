@@ -330,6 +330,27 @@ script → narration → **render** job lifecycles, worker serialization, failur
 paths, STT/OCR/vision service units, timeline alignment, render planning and
 final QC.
 
+### Phase 8 — diagnostics, pre-flight & performance (QA tooling)
+
+* `scripts\diagnose_windows.bat` (or `scripts\diagnose_unix.sh`) prints a
+  full environment report: Python/pip/venv, FFmpeg, FFprobe, Tesseract (+hin/ben
+  packs), Piper, llama-cli, GGUF/Whisper/Piper model files, RAM, CPU, disk
+  space, `.env` presence and every required directory. Exit code 0 = ready,
+  1 = errors (never prints secrets).
+* `GET /api/system/preflight?language=en&target_duration_seconds=120`
+  machine-readably checks every component a run needs (ffmpeg, ffprobe,
+  database, storage, disk space, LLM, Piper + the selected language's voice,
+  subtitle font for hi/bn burn-in) with `ok/required/detail/setup_hint` per
+  check — optional components (Whisper/OCR) are reported but never block.
+  `GET /api/system/status` also carries a flat `dependencies` block.
+* When a render completes, the worker writes
+  `data/projects/<id>/analysis/performance/performance_report.json` — real
+  wall-clock timings per stage from the persisted job timestamps (peak RAM is
+  operator-measured on real hardware; never fabricated).
+* See `docs/phase8-real-world-test-report.md` for the honest Phase 8 status:
+  everything verifiable without the target PC is verified; the real-media
+  acceptance matrix must run on the Windows machine (procedure included).
+
 ## API
 
 | Method | Endpoint                        | Purpose                                   |
@@ -825,10 +846,16 @@ network.
 6. **Phase 6 (done)** — local TTS narration (Piper CLI, en/hi/bn voices),
    real-audio segment timing, SRT/VTT subtitles, narration assembly +
    normalization, deterministic audio/timeline/subtitle QC → NARRATION_READY.
-7. **Phase 7 (this phase)** — render planning (narration-as-master-clock),
+7. **Phase 7 (done)** — render planning (narration-as-master-clock),
    selected-scene clip extraction, original-audio + narration mix with
    ducking, subtitle burn-in and the CPU-first final MP4 encode, with a
    deterministic final QC → COMPLETED.
+8. **Phase 8 (done — tooling; real-hardware acceptance pending)** — Windows
+   diagnostic script, machine-readable dependency status + pre-flight
+   endpoint, per-stage performance report, absolute-path redaction in the
+   public status response, security/regression scans. The real-media
+   acceptance matrix runs on the target Windows PC (see
+   `docs/phase8-real-world-test-report.md`).
 
 With Phase 7 the full product loop is complete: upload any supported video,
 pick English/Hindi/Bengali and 2/3/4 minutes, and the app returns a final
@@ -863,6 +890,7 @@ See `docs/architecture.md` for the full pipeline design.
 | Final video has no subtitle text burned in     | Check `SUBTITLE_BURN_ENABLED` (default true) and the `Subtitles` status on the **Final video ready** card |
 | Final encode is very slow                      | Expected on CPU at ≤1280×720; lower `OUTPUT_MAX_WIDTH/HEIGHT` or raise `VIDEO_CRF`; progress is real and retry is safe |
 | Project stuck at `preprocessing`/`analyzing`/`scripting`/`narrating`/`rendering` after restart | In-process queue lost the job; restart the stage (stale runs auto-recover to their retry state on the next call) |
+| Pre-flight says `ok=false` / diagnose reports errors | Run `scripts\diagnose_windows.bat` and follow the per-check `setup_hint` (missing FFmpeg/Piper/LLM/voice/font are the usual causes) |
 | Port 8000 busy                                 | Change `BACKEND_PORT` in `.env`                                      |
 
 ## Security foundations

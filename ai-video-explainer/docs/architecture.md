@@ -352,7 +352,8 @@ failure); Phases 5-7 fail loudly with setup hints (`llm_unavailable` /
 | Method | Endpoint                  | Behavior (Phase 7)                                  |
 | ------ | ------------------------- | --------------------------------------------------- |
 | GET    | `/api/health`             | liveness                                            |
-| GET    | `/api/system/status`      | python/ffmpeg/sqlite/storage/db + limits + worker + **analysis deps** + **LLM report** (provider, available, model_name basename, threads, ctx) + **TTS report** (provider, executable, per-language voices — basenames only) + **render readiness** (codec/preset, output cap, burn + font configured), `phase: "7"` |
+| GET    | `/api/system/status`      | python/ffmpeg/sqlite/storage/db + limits + worker + **analysis deps** + **LLM report** (provider, available, model_name basename, threads, ctx) + **TTS report** (provider, executable, per-language voices — basenames only) + **render readiness** (codec/preset, output cap, burn + font configured) + **`dependencies`** flat boolean map (P8), `phase: "7"`; absolute paths redacted (basenames/relative only) |
+| GET    | `/api/system/preflight`   | **P8 pre-flight**: `?language=en\|hi\|bn&target_duration_seconds=60..600` → per-check `ok/required/detail/setup_hint` for ffmpeg/ffprobe/database/storage/disk/whisper/tesseract/llm/piper/voice_<lang>/subtitle_font + `blocking` list; `ok` = all required checks pass |
 | GET    | `/api/projects`           | list (metadata + asset refs included)               |
 | GET    | `/api/projects/{id}`      | one project + status/progress (404 on unknown id)   |
 | POST   | `/api/projects/upload`    | **multipart upload** → streams, validates, 201 READY |
@@ -390,6 +391,13 @@ failure); Phases 5-7 fail loudly with setup hints (`llm_unavailable` /
 internal filesystem paths (asset paths are relative only; the LLM report
 only exposes the model file's *basename*).
 
+Phase 8 (QA tooling, no pipeline change): `scripts/diagnose_windows.bat` /
+`diagnose_unix.sh` produce the full environment report; the worker writes
+`analysis/performance/performance_report.json` (real per-stage wall-clock
+timings from persisted job timestamps) when a render completes
+(`services/performance.py`, best-effort); see
+`docs/phase8-real-world-test-report.md` for the honest real-hardware status.
+
 Phase statuses: `analyzed → scripting → script_ready → narrating →
 narration_ready → rendering → completed` (failure at each stage returns to
 its retry state — `analyzed` / `script_ready` / `render_failed` — with the
@@ -423,8 +431,14 @@ failed run recorded and its partial artifacts removed). The UI polls `GET
 - **Phase 6 ✅** local TTS narration (Piper CLI + en/hi/bn voices, explicit
   download only), real-audio segment timing, SRT/VTT subtitles, WAV
   assembly + normalization, deterministic narration QC → NARRATION_READY.
-- **Phase 7 ✅ (this phase)** render planning (narration-as-master-clock,
+- **Phase 7 ✅** render planning (narration-as-master-clock,
   holds, no black frames), selected-scene clip extraction, original-audio +
   narration mix with ducking, subtitle burn-in, CPU-first final MP4 encode
   and deterministic final QC → COMPLETED. The full local pipeline is now
   live end to end.
+- **Phase 8 ✅ (tooling; real-hardware acceptance pending)** Windows
+  diagnostic script, machine-readable `dependencies` + `/api/system/preflight`
+  (stops before expensive processing), per-stage performance report, absolute
+  path redaction in the public status response, security/regression scans.
+  The real-media acceptance matrix must run on the target Windows PC — see
+  `docs/phase8-real-world-test-report.md`.

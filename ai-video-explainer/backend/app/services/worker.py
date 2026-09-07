@@ -34,6 +34,7 @@ from app.models.enums import JobStatus, PipelineStage, ProjectStatus
 from app.services.analysis import AnalysisService, _STAGE_LABELS
 from app.services.ffmpeg import FfmpegService
 from app.services.narration import NarrationService, _STAGE_LABELS as _TTS_STAGE_LABELS
+from app.services.performance import write_performance_report
 from app.services.preprocess import PreprocessService
 from app.services.render import RenderService, _STAGE_LABELS as _RENDER_STAGE_LABELS
 from app.services.storage import StorageService
@@ -481,6 +482,15 @@ class ProcessingWorker:
                 project_id, job_id,
             )
             return
+        # Phase 8: aggregate the per-stage timings into a disk artifact.
+        # Best-effort - a report failure must never fail a successful render.
+        try:
+            write_performance_report(self._db, self._storage, project_id)
+        except Exception:  # noqa: BLE001 - report is best-effort
+            logger.warning(
+                "Could not write the performance report for project %s.",
+                project_id, exc_info=True,
+            )
         logger.info(
             "Job %s completed; project %s COMPLETED (QC=%s).",
             job_id, project_id, summary.get("qc_score"),
