@@ -21,7 +21,20 @@ def test_database_initializes_schema(settings) -> None:
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
-    assert {"projects", "processing_jobs"} <= tables
+    assert {"projects", "processing_jobs", "analysis_results", "script_runs"} <= tables
+
+    # Phase 5 script_runs columns (additive schema, backward compatible).
+    with db.connect() as conn:
+        script_columns = [
+            row[1] for row in conn.execute("PRAGMA table_info(script_runs)").fetchall()
+        ]
+    for expected in (
+        "id", "project_id", "status", "current_stage", "language",
+        "target_duration_seconds", "content_type", "selected_scene_count",
+        "word_count", "quality_score", "generation_fingerprint",
+        "error_message", "warnings", "created_at", "updated_at",
+    ):
+        assert expected in script_columns, f"missing script_runs column: {expected}"
 
     # Idempotent: a second initialize must not raise or duplicate anything.
     Database(settings.database_path).initialize()

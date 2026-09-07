@@ -255,6 +255,109 @@ class AnalysisError(ExplainerError):
     default_message = "Video analysis failed."
 
 
+class LLMUnavailableError(ExplainerError):
+    """The local LLM provider/executable is missing or not configured."""
+
+    status_code = 503
+    code = "llm_unavailable"
+    default_message = (
+        "The local language model is not available. Phase 5 needs llama.cpp "
+        "(the 'llama-cli' binary) and a small quantized GGUF model. The app "
+        "never downloads models automatically - see the README 'Phase 5 - "
+        "first-run model setup' section for the explicit one-time install, "
+        "or set LLAMA_CPP_PATH / LLAMA_MODEL_PATH in your .env file."
+    )
+
+
+class LLMModelMissingError(ExplainerError):
+    """The configured GGUF model file does not exist locally."""
+
+    status_code = 503
+    code = "model_download_required"
+    default_message = (
+        "The local language model file is missing. No automatic download "
+        "is performed - run the explicit setup (see README 'Phase 5 - "
+        "first-run model setup') to fetch a small quantized GGUF, then "
+        "point LLAMA_MODEL_PATH at it (or drop it into the models "
+        "directory)."
+    )
+
+
+class LLMTimeoutError(ExplainerError):
+    """A llama.cpp generation exceeded its configured timeout."""
+
+    status_code = 504
+    code = "llm_timeout"
+    default_message = "The local language model did not answer in time."
+
+
+class LLMMalformedOutputError(ExplainerError):
+    """The model answered with text that could not be parsed as requested."""
+
+    status_code = 500
+    code = "llm_malformed_output"
+    default_message = "The local language model returned unreadable output."
+
+
+class LLMGenerationError(ExplainerError):
+    """The llama.cpp subprocess itself failed (non-zero exit)."""
+
+    status_code = 500
+    code = "llm_generation_failed"
+    default_message = "The local language model failed to generate text."
+
+
+class EvidenceError(ExplainerError):
+    """Phase 4 analysis artifacts could not be loaded for Phase 5."""
+
+    status_code = 500
+    code = "evidence_preparation_failed"
+    default_message = "The analyzed evidence could not be prepared for story understanding."
+
+
+class StoryError(ExplainerError):
+    """Story understanding failed as a whole (structural Phase 5 stage)."""
+
+    status_code = 500
+    code = "story_understanding_failed"
+    default_message = "Story understanding failed."
+
+
+class ScriptGenerationError(ExplainerError):
+    """Script generation failed as a whole (structural Phase 5 stage)."""
+
+    status_code = 500
+    code = "script_generation_failed"
+    default_message = "Script generation failed."
+
+
+class ScriptQualityError(ExplainerError):
+    """Deterministic script QC rejected the output (e.g. empty script)."""
+
+    status_code = 500
+    code = "script_quality_failed"
+    default_message = "The generated script failed quality control."
+
+
+class ScriptNotReadyError(ExplainerError):
+    """Script generation requires an ANALYZED project."""
+
+    status_code = 409
+    code = "script_not_ready"
+    default_message = (
+        "This project cannot generate a script yet. Run analysis first "
+        "(status becomes ANALYZED)."
+    )
+
+
+class ScriptConflictError(ExplainerError):
+    """A script-generation job is already queued or running for the project."""
+
+    status_code = 409
+    code = "script_already_running"
+    default_message = "Script generation is already running for this project."
+
+
 class NotInPhase1Error(ExplainerError):
     """Feature is deliberately not implemented yet (scope guard).
 

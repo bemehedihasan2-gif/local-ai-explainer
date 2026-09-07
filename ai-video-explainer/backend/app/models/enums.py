@@ -40,7 +40,9 @@ class ProjectStatus(str, Enum):
     PREPARED = "prepared"  # analysis copy/thumbnail/audio ready (Phase 3 done)
     ANALYZING = "analyzing"  # Phase 4 worker is running the local analysis
     ANALYZED = "analyzed"  # scenes/transcript/ocr/visual/timeline stored (Phase 4 done)
-    QUEUED = "queued"  # future pipeline stages (Phase 5+)
+    SCRIPTING = "scripting"  # Phase 5 worker is building story + script
+    SCRIPT_READY = "script_ready"  # story/selection/plan/script/QC stored (Phase 5 done)
+    QUEUED = "queued"  # future pipeline stages (Phase 6+)
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"

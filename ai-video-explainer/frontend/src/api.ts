@@ -3,10 +3,17 @@ import type {
   AnalyzeResponse,
   ApiErrorBody,
   CreateProjectPayload,
+  DurationPlanDocument,
+  GenerateScriptResponse,
   Job,
   Language,
   Project,
   ProjectStatus,
+  ScriptDocument,
+  ScriptQualityDocument,
+  ScriptRun,
+  SelectedScenesDocument,
+  StoryDocument,
   SystemStatus,
   TimelineDocument,
   UploadProgress,
@@ -139,6 +146,26 @@ export const api = {
   getAnalysis: (id: string) => request<AnalysisRun>(`/api/projects/${id}/analysis`),
   getTimeline: (id: string) =>
     request<TimelineDocument>(`/api/projects/${id}/timeline`),
+  generateScript: (
+    id: string,
+    payload: { language: Language; target_duration_seconds: number },
+  ) =>
+    request<GenerateScriptResponse>(`/api/projects/${id}/generate-script`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getStoryStatus: (id: string) =>
+    request<ScriptRun>(`/api/projects/${id}/story-status`),
+  getStory: (id: string) =>
+    request<StoryDocument>(`/api/projects/${id}/story`),
+  getSelectedScenes: (id: string) =>
+    request<SelectedScenesDocument>(`/api/projects/${id}/selected-scenes`),
+  getDurationPlan: (id: string) =>
+    request<DurationPlanDocument>(`/api/projects/${id}/duration-plan`),
+  getScript: (id: string) =>
+    request<ScriptDocument>(`/api/projects/${id}/script`),
+  getScriptQuality: (id: string) =>
+    request<ScriptQualityDocument>(`/api/projects/${id}/script-quality`),
 };
 
 /** Browser URL for a project's poster thumbnail (or null pre-PREPARED). */
@@ -162,6 +189,8 @@ export function normalizeStatus(value: string): ProjectStatus {
     "prepared",
     "analyzing",
     "analyzed",
+    "scripting",
+    "script_ready",
     "queued",
     "processing",
     "completed",

@@ -47,7 +47,7 @@ class Settings(BaseSettings):
 
     # Application -------------------------------------------------------
     app_name: str = "Local AI Video Explainer"
-    app_version: str = "0.4.0"
+    app_version: str = "0.5.0"
     environment: str = "development"
 
     # Servers -----------------------------------------------------------
@@ -129,6 +129,56 @@ class Settings(BaseSettings):
     # Visual frame analysis (deterministic PIL metadata by default; a local
     # vision model can be plugged in later via LocalVisionProvider).
     visual_analysis_enabled: bool = True
+
+    # Phase 5 - local LLM (story understanding + script generation) -------
+    # Provider abstraction: the app shells out to an external llama.cpp CLI
+    # (no Python binding, no always-loaded model). "none" disables the
+    # stage explicitly; the pipeline then refuses with a clear message.
+    llm_provider: str = "llama_cpp"  # "llama_cpp" | "none"
+    #: Path to the llama.cpp CLI binary (``llama-cli``). None -> PATH lookup.
+    llama_cpp_path: Path | None = None
+    #: Path to a quantized GGUF model. None -> auto-discover a single
+    #: ``*.gguf`` inside the models directory. The app never downloads one.
+    llama_model_path: Path | None = None
+    llama_threads: int = 4            # Ryzen 3 3200G = 4 cores, CPU-only
+    llama_context_size: int = 2048    # small context keeps 8 GB usable
+    llama_max_tokens: int = 1024      # ~600 words + prompt overhead
+    llama_timeout_seconds: int = 300  # one generation must finish
+    llm_temperature: float = 0.2      # low = grounded, repeatable narration
+    llm_seed: int = 42                # deterministic-ish local sampling
+
+    # Story understanding (evidence compression + hierarchical batches)
+    story_batch_scenes: int = 15      # scenes per batch summary (long videos)
+    #: Per-scene transcript/OCR excerpt cap in characters (bounded prompts).
+    story_max_excerpt_chars: int = 240
+    story_prompt_version: str = "1.0"
+    script_prompt_version: str = "1.0"
+    planner_version: str = "1.0"
+
+    # Narration pacing: word targets per duration (min, max) and WPM.
+    narration_wpm: int = 145
+    script_word_targets: dict[int, list[int]] = {
+        120: [250, 300],   # 2 minutes
+        180: [375, 450],   # 3 minutes
+        240: [500, 600],   # 4 minutes
+    }
+
+    # Scene importance weights (documented; additive part sums to 0.95 and
+    # is re-normalized to 100%; the redundancy adjustment applies up to a
+    # 5% multiplicative penalty on top).
+    importance_weight_information_density: float = 0.25
+    importance_weight_speech_density: float = 0.15
+    importance_weight_semantic: float = 0.25
+    importance_weight_turning_point: float = 0.15
+    importance_weight_continuity: float = 0.10
+    importance_weight_ocr: float = 0.05
+    importance_redundancy_penalty: float = 0.05
+
+    # Script budget clamps (per-scene narration words).
+    min_words_per_scene: int = 15
+    max_words_per_scene: int = 110
+    min_scenes_per_script: int = 3
+    max_selected_scenes: int = 24
 
     # Storage (relative -> resolved against base_dir by the validator) ---
     base_dir: Path = PROJECT_ROOT
@@ -288,6 +338,153 @@ class Settings(BaseSettings):
         if value < 1:
             raise ValueError("analysis_timeout_seconds must be >= 1")
         return value
+
+    @field_validator("llm_provider")
+    @classmethod
+    def _llm_provider_allowed(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value not in {"llama_cpp", "none"}:
+            raise ValueError("llm_provider must be 'llama_cpp' or 'none'")
+        return value
+
+    @field_validator("llama_threads")
+    @classmethod
+    def _llama_threads_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("llama_threads must be >= 1")
+        return value
+
+    @field_validator("llama_context_size")
+    @classmethod
+    def _llama_context_positive(cls, value: int) -> int:
+        if value < 512:
+            raise ValueError("llama_context_size must be >= 512")
+        return value
+
+    @field_validator("llama_max_tokens")
+    @classmethod
+    def _llama_max_tokens_positive(cls, value: int) -> int:
+        if value < 64:
+            raise ValueError("llama_max_tokens must be >= 64")
+        return value
+
+    @field_validator("llama_timeout_seconds")
+    @classmethod
+    def _llama_timeout_positive(cls, value: int) -> int:
+        if value < 10:
+            raise ValueError("llama_timeout_seconds must be >= 10")
+        return value
+
+    @field_validator("llm_temperature")
+    @classmethod
+    def _llm_temperature_range(cls, value: float) -> float:
+        if not 0.0 <= value <= 2.0:
+            raise ValueError("llm_temperature must be in [0, 2]")
+        return value
+
+    @field_validator("story_batch_scenes")
+    @classmethod
+    def _story_batch_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("story_batch_scenes must be >= 1")
+        return value
+
+    @field_validator("story_max_excerpt_chars")
+    @classmethod
+    def _story_excerpt_positive(cls, value: int) -> int:
+        if value < 40:
+            raise ValueError("story_max_excerpt_chars must be >= 40")
+        return value
+
+    @field_validator("narration_wpm")
+    @classmethod
+    def _narration_wpm_range(cls, value: int) -> int:
+        if not 60 <= value <= 400:
+            raise ValueError("narration_wpm must be in [60, 400]")
+        return value
+
+    @field_validator("script_word_targets")
+    @classmethod
+    def _script_word_targets_valid(cls, value: dict[int, list[int]]) -> dict[int, list[int]]:
+        if set(value) != {120, 180, 240}:
+            raise ValueError("script_word_targets must define 120, 180 and 240 seconds")
+        for duration, (low, high) in value.items():
+            if not (0 < low < high):
+                raise ValueError(f"script_word_targets[{duration}] must be (min, max) with min < max")
+        return value
+
+    @field_validator("importance_weight_information_density")
+    @classmethod
+    def _importance_weight_information(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("importance_weight_information_density must be in [0, 1]")
+        return value
+
+    @field_validator("importance_weight_speech_density")
+    @classmethod
+    def _importance_weight_speech(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("importance_weight_speech_density must be in [0, 1]")
+        return value
+
+    @field_validator("importance_weight_semantic")
+    @classmethod
+    def _importance_weight_semantic(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("importance_weight_semantic must be in [0, 1]")
+        return value
+
+    @field_validator("importance_weight_turning_point")
+    @classmethod
+    def _importance_weight_turning(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("importance_weight_turning_point must be in [0, 1]")
+        return value
+
+    @field_validator("importance_weight_continuity")
+    @classmethod
+    def _importance_weight_continuity(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("importance_weight_continuity must be in [0, 1]")
+        return value
+
+    @field_validator("importance_weight_ocr")
+    @classmethod
+    def _importance_weight_ocr(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("importance_weight_ocr must be in [0, 1]")
+        return value
+
+    @field_validator("importance_redundancy_penalty")
+    @classmethod
+    def _importance_redundancy(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("importance_redundancy_penalty must be in [0, 1]")
+        return value
+
+    @model_validator(mode="after")
+    def _importance_weights_consistent(self) -> "Settings":
+        additive = (
+            self.importance_weight_information_density
+            + self.importance_weight_speech_density
+            + self.importance_weight_semantic
+            + self.importance_weight_turning_point
+            + self.importance_weight_continuity
+            + self.importance_weight_ocr
+        )
+        if not 0.94 <= additive <= 0.96:
+            raise ValueError(
+                "The six additive importance weights must sum to 0.95 "
+                f"(got {additive:.3f}); the redundancy adjustment is the "
+                "remaining 5%."
+            )
+        if not 0.0 <= self.importance_redundancy_penalty <= 0.1:
+            raise ValueError("importance_redundancy_penalty must be in [0, 0.1]")
+        if self.min_words_per_scene < 1 or self.max_words_per_scene < self.min_words_per_scene:
+            raise ValueError("min/max_words_per_scene are inconsistent")
+        if self.min_scenes_per_script < 1 or self.max_selected_scenes < self.min_scenes_per_script:
+            raise ValueError("min_scenes_per_script/max_selected_scenes are inconsistent")
+        return self
 
     @field_validator("allowed_video_extensions")
     @classmethod

@@ -51,6 +51,62 @@ def preprocessing_fingerprint(project_row: dict[str, Any]) -> str:
     return _sha256_json(payload)
 
 
+_STORY_SETTINGS = (
+    "llm_provider",
+    "llama_threads",
+    "llama_context_size",
+    "llama_max_tokens",
+    "llm_temperature",
+    "llm_seed",
+    "story_batch_scenes",
+    "story_max_excerpt_chars",
+    "story_prompt_version",
+    "script_prompt_version",
+    "planner_version",
+    "narration_wpm",
+    "script_word_targets",
+    "importance_weight_information_density",
+    "importance_weight_speech_density",
+    "importance_weight_semantic",
+    "importance_weight_turning_point",
+    "importance_weight_continuity",
+    "importance_weight_ocr",
+    "importance_redundancy_penalty",
+    "min_words_per_scene",
+    "max_words_per_scene",
+    "min_scenes_per_script",
+    "max_selected_scenes",
+)
+
+
+def story_generation_fingerprint(
+    settings: Any,
+    project_row: dict[str, Any],
+    *,
+    language: str,
+    target_duration_seconds: int,
+) -> str:
+    """Hash of everything that changes Phase 5 output.
+
+    Combines the consumed analysis identity (config + preprocessing
+    fingerprints) with the generation options (language, duration) and the
+    model/planner configuration. Stored on ``script_runs`` rows; when it
+    matches a completed run, results are reused instead of regenerated.
+    """
+    from app.ai.llm import llm_model_identity
+
+    payload: dict[str, Any] = {
+        "analysis_config": analysis_config_fingerprint(settings),
+        "preprocessing": preprocessing_fingerprint(project_row),
+        "language": language,
+        "target_duration_seconds": target_duration_seconds,
+        "llm_model": llm_model_identity(settings),
+    }
+    for name in _STORY_SETTINGS:
+        payload[name] = getattr(settings, name)
+    return _sha256_json(payload)
+
+
 def _sha256_json(payload: dict[str, Any]) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

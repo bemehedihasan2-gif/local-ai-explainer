@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 
+from app.ai.llm import build_llm_provider
 from app.ai.ocr import tesseract_available
 from app.ai.stt import whisper_model_installed, whisper_package_installed
 from app.api.deps import (
@@ -25,6 +26,29 @@ from app.services.worker import ProcessingWorker
 from app.utils.logging import log_context
 
 router = APIRouter()
+
+
+def _llm_report(settings: Settings) -> dict[str, object]:
+    """Public capability report for the local LLM (basename only - the
+    configured model path is never exposed)."""
+    provider = build_llm_provider(settings)
+    detail = provider.describe()
+    return {
+        "provider": detail.get("provider"),
+        "available": bool(detail.get("available")),
+        "executable_available": bool(detail.get("executable_available", False)),
+        "model_available": bool(detail.get("model_available", False)),
+        "model_name": detail.get("model_name"),
+        "threads": detail.get("threads"),
+        "context_size": detail.get("context_size"),
+        "max_tokens": detail.get("max_tokens"),
+        "temperature": detail.get("temperature"),
+        "setup_hint": detail.get("setup_hint"),
+        "note": (
+            "llama.cpp CLI + a small quantized GGUF (e.g. 1-3B Q4). Models "
+            "are downloaded only by explicit user action - never silently."
+        ),
+    }
 
 
 @router.get("/api/health")
@@ -162,11 +186,14 @@ def system_status(
                     "visual_analysis_enabled": settings.visual_analysis_enabled,
                 },
             },
-            "phase": "4",
+            "llm": _llm_report(settings),
+            "phase": "5",
             "message": (
-                "Phase 4 local analysis: PREPARED videos become ANALYZED with "
-                "scene boundaries, speech-to-text, OCR, deterministic visual "
-                "metadata, and an aligned timeline - all on-device, no cloud "
-                "APIs. Missing models (whisper/tesseract) degrade gracefully."
+                "Phase 5 local story + script: ANALYZED videos become "
+                "SCRIPT_READY with a story model, important-scene selection, "
+                "a duration-aware narration plan and an original script in "
+                "English/Hindi/Bengali, written by a small local LLM "
+                "(llama.cpp + a quantized GGUF). No cloud APIs; missing "
+                "models are reported with explicit setup instructions."
             ),
         }

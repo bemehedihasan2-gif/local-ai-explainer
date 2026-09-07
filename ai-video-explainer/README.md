@@ -1,4 +1,4 @@
-# Local AI Video Explainer — Phase 4: On-Device Analysis
+# Local AI Video Explainer — Phase 5: Story & Script on Your PC
 
 A **local, zero-cost AI video explainer** for Windows: drop in almost any video
 (movie, TV, gameplay, tutorial, lecture, sports, screen recording, social,
@@ -16,8 +16,8 @@ MP4 with synchronized subtitles.
 > (≤ 640 px @ 5 fps H.264, what vision/OCR stages read), a poster JPEG
 > thumbnail, and a 16 kHz mono WAV audio track for speech-to-text.
 >
-> **Phase 4 (this phase) adds the first real local understanding pipeline:**
-> the **PREPARED** project is analyzed entirely on-device — deterministic
+> **Phase 4 added the first real local understanding pipeline:** the
+> **PREPARED** project is analyzed entirely on-device — deterministic
 > FFmpeg **scene detection** with representative frames, **speech-to-text**
 > (faster-whisper, CPU `int8`, `tiny`/`base`), **OCR** (Tesseract) on scene
 > frames, **deterministic visual metadata** (brightness/blur/complexity), and
@@ -26,13 +26,23 @@ MP4 with synchronized subtitles.
 > **ANALYZED** status. Optional local models degrade gracefully
 > (`UNAVAILABLE`/`SKIPPED`), never faked.
 >
-> **No script/TTS/rendering yet** — story understanding and generation are
-> later phases, and the code never fakes results.
+> **Phase 5 (this phase) adds story understanding + duration-aware script
+> generation:** an **ANALYZED** project becomes **SCRIPT_READY** through
+> evidence compression, hierarchical **story understanding** (a small local
+> LLM — llama.cpp CLI + a quantized GGUF, never a cloud API), **important
+> scene selection** (weighted evidence + story continuity, redundancy
+> control), **duration planning** (2/3/4-minute word budgets allocated
+> *before* writing), an **original narration script** in English / Hindi /
+> Bengali, and **deterministic quality control** (0-100 score, language,
+> length, chronology, repetition, source-copying and ungrounded-claims
+> checks). TTS, subtitles and rendering remain later phases — nothing is
+> faked.
 >
 > **No paid APIs.** No Claude/OpenAI/Gemini keys. Everything runs on the
 > user's PC, targeting 8 GB RAM, CPU-only, integrated graphics. Only **one
 > heavy job runs at a time** (worker, `PROCESSING_CONCURRENCY=1`), models are
-> lazy-loaded and released after each stage.
+> lazy-loaded and released after each stage (the LLM is spawned per
+> generation and exits after every call).
 
 ## Why this folder?
 
@@ -50,6 +60,8 @@ All storage paths resolve relative to this folder by default.
 | FFmpeg    | 6.x+ (ffmpeg **and** ffprobe) | **Required from Phase 2** — FFprobe validates every upload; scene detection in Phase 4 |
 | Tesseract | 5.x (`tesseract` on PATH)   | **Optional** — OCR on scene frames. Without it OCR reports `unavailable` and the rest of the analysis still runs |
 | faster-whisper | Python package + one model | **Optional** — speech-to-text. Without it STT reports `model_download_required` and the rest of the analysis still runs |
+| llama.cpp | `llama-cli` binary | **Required for Phase 5** — story understanding + script generation. Install via `winget install llama.cpp` or the official GitHub release, or set `LLAMA_CPP_PATH` |
+| GGUF model | one small quantized file (~1 GB) | **Required for Phase 5** — e.g. `Qwen2.5-1.5B-Instruct Q4_K_M`. Downloaded once explicitly (never silently); see setup below |
 
 FFmpeg is **not** downloaded automatically. Install it (e.g. `winget install
 ffmpeg` or the gyan.dev build) and ensure `ffmpeg`/`ffprobe` are on PATH, or
@@ -73,6 +85,32 @@ clear warning — nothing is faked.
 Tesseract (OCR): Windows `winget install UB-Mannheim.TesseractOCR` (or the
 gyan.dev build), then ensure `tesseract` is on PATH (or set `TESSERACT_PATH`
 in `.env`).
+
+### Phase 5 — first-run local LLM setup (required for Generate, no API key)
+
+Story understanding and script writing use a **small quantized GGUF model**
+through the llama.cpp CLI. The app **never downloads a model silently** — do
+it once, explicitly (~1 GB for the default 1.5B Q4 model):
+
+```bat
+scripts\download_llm_model.bat   :: Qwen2.5-1.5B-Instruct GGUF into models\llm\
+winget install llama.cpp         :: provides the llama-cli binary
+```
+
+(Linux/macOS: `scripts/download_llm_model_unix.sh`, `brew install llama.cpp`
+or the official release.) Then either leave `.env` defaults (auto-discovery:
+`llama-cli` on PATH + a single `*.gguf` in `models/`) or set explicitly:
+
+```dotenv
+LLAMA_CPP_PATH=C:\llama.cpp\build\bin\Release\llama-cli.exe
+LLAMA_MODEL_PATH=C:\models\qwen2.5-1.5b-instruct-q4_k_m.gguf
+```
+
+While the binary or model is missing, **Generate explanation** shows a setup
+hint and refuses with `llm_unavailable` / `model_download_required` — the
+pipeline never fakes a story. `GET /api/system/status` → `llm` reports
+`available` / `model_available` / `model_name` (basename only) so the UI can
+warn before you even click Generate.
 
 ## Supported video formats
 
@@ -202,12 +240,12 @@ everywhere — including the full preprocess **and analysis** job lifecycles,
 worker serialization, failure paths, STT/OCR/vision service units and
 timeline alignment.
 
-## API (Phase 4)
+## API (Phase 5)
 
 | Method | Endpoint                        | Purpose                                   |
 | ------ | ------------------------------- | ----------------------------------------- |
 | GET    | `/api/health`                   | Liveness (app + version)                  |
-| GET    | `/api/system/status`            | Python, FFmpeg, SQLite, storage, DB, limits, **worker state** |
+| GET    | `/api/system/status`            | Python, FFmpeg, SQLite, storage, DB, limits, **worker state**, **LLM report** |
 | GET    | `/api/projects`                 | List projects (metadata included)         |
 | GET    | `/api/projects/{id}`            | One project + current status/progress     |
 | POST   | `/api/projects/upload`          | **Multipart video upload** (below)        |
@@ -219,6 +257,13 @@ timeline alignment.
 | GET    | `/api/projects/{id}/analysis`   | Latest analysis-run summary               |
 | GET    | `/api/projects/{id}/timeline`   | Aligned per-scene evidence timeline       |
 | GET    | `/api/projects/{id}/analysis/frames/{scene_id}` | Scene representative JPEG (path-safe) |
+| POST   | `/api/projects/{id}/generate-script` | **Queue Phase 5 story+script** (JSON: `language`, `target_duration_seconds`) |
+| GET    | `/api/projects/{id}/story-status`  | Latest script-run summary + live stage  |
+| GET    | `/api/projects/{id}/story`        | Story model (content type, premise, events) |
+| GET    | `/api/projects/{id}/selected-scenes` | Important scenes with reasons         |
+| GET    | `/api/projects/{id}/duration-plan`  | Word budgets per scene + targets      |
+| GET    | `/api/projects/{id}/script`        | The generated narration script        |
+| GET    | `/api/projects/{id}/script-quality` | Deterministic QC report (0-100)       |
 | DELETE | `/api/projects/{id}`            | Delete record **and** controlled files    |
 
 ### `POST /api/projects/upload`
@@ -422,12 +467,24 @@ The single-page UI runs the full upload → preprocess flow:
   detection → Speech recognition → OCR → Visual analysis → Timeline → QC)
 - when **analyzed**: results panel with detected language, scene count,
   speech/OCR/visual status, processing time, warnings, and a per-scene
-  timeline (time range, speech/OCR presence, info-density score,
-  representative frame) — plus the **Generate explanation** button
-  (pipeline work of later phases — it does not fake output)
+  timeline — plus the Phase 5 **Generate explanation** panel (language
+  English / Hindi / বাংলা, duration 2 / 3 / 4 min, local-LLM readiness
+  warning when llama.cpp or the GGUF is missing)
+- while **scripting**: honest stage progress (Preparing evidence →
+  Understanding story → Scoring scenes → Selecting important scenes →
+  Planning duration → Writing explanation → Quality checking) driven by
+  the persisted run row
+- when **script_ready**: an “Explanation ready” card — language, target
+  and estimated duration, word count, quality score, detected content
+  type, selected-scene count; **Story overview** (premise + turning
+  points); **Important scenes** (timestamp, importance score, reasons,
+  narration word budget, thumbnail); the full **script** with a Copy
+  button; the **quality check** chips; regenerate controls (language /
+  duration) that re-run the backend pipeline; and the scene timeline
+  with selected vs. skipped marks
 - project history shows status tags incl. `preprocessing`/`prepared`/
-  `analyzing`/`analyzed`; **View** opens details, **Delete** removes
-  record + files
+  `analyzing`/`analyzed`/`scripting`/`script_ready`; **View** opens
+  details, **Delete** removes record + files
 
 Backend validation is authoritative — the client checks are only UX.
 
@@ -437,23 +494,82 @@ Structured lines: `timestamp | level | module | message | project=… | job=…`
 `logs/app.log` for everything, `logs/errors.log` for errors only, both
 auto-rotating. Project ids are attached via context; secrets are never logged.
 
-## Phase 4 limitations (honest)
+## Phase 5 story + script (how it works)
 
-- **No story understanding / script / TTS / render yet**: the Generate
-  button is intentionally inert (no fake narration, no placeholder MP4s).
-- STT and OCR depend on optional local installs (Whisper model, Tesseract).
-  Until then those stages report `unavailable`/`skipped` — the pipeline
-  still completes with scenes, visual metadata and timeline.
-- Visual analysis is deterministic metadata (brightness/blur/complexity),
-  **not** object/scene descriptions — no hallucinated claims. A small local
-  vision model can be plugged in later via `LocalVisionProvider`.
+`POST /api/projects/{id}/generate-script` on an **ANALYZED** project with
+`{"language": "en|hi|bn", "target_duration_seconds": 120|180|240}` — idempotent
+reuse when the generation fingerprint (analysis + language + duration +
+model + prompt/planner versions) matches, `409` while running, `503` with a
+setup hint when the local LLM is unavailable, retry after failure:
+
+1. **Evidence preparation** — Phase 4 artifacts are compressed into
+   `analysis/story/evidence_manifest.json`: per-scene transcript excerpts
+   (capped by `STORY_MAX_EXCERPT_CHARS`), OCR text, visual metadata,
+   information/speech density, neighbor ids. Long videos never dump a full
+   transcript into a prompt.
+2. **Story understanding** — scenes are processed in batches of
+   `STORY_BATCH_SCENES` (default 15); each batch yields a compact JSON
+   summary (events/facts/entities/uncertainties), then one global call
+   produces `story.json`: content type + confidence, premise, events,
+   turning points, beginning/middle/ending, cause/effect, important facts,
+   uncertain points — every claim carries `scene_ids` evidence references.
+   The prompt forbids invented names/numbers; uncertain content goes to
+   `uncertain_points`; invalid scene ids and unknown content types are
+   filtered in code (falls back to `general` with confidence ≤ 0.5).
+   Per-scene semantic scores are computed deterministically from which
+   evidence sets a scene appears in.
+3. **Importance + selection** — `scene_importance.json` scores every scene
+   with documented weights (information density 25%, semantic 25%, turning
+   point 15%, speech 15%, continuity 10%, OCR 5%, re-normalized; up to 5%
+   redundancy penalty for text-duplicate neighbors). `selected_scenes.json`
+   always keeps the opening/closing scenes, picks by score, fills timeline
+   gaps for coverage and drops redundant consecutive near-duplicates.
+4. **Duration planning** — the target duration defines a word budget
+   (2 min: 250-300, 3 min: 375-450, 4 min: 500-600 at `NARRATION_WPM=145`)
+   that is allocated across selected scenes **before** writing; scenes
+   without evidence get a 0-word budget (except fully silent videos, which
+   fall back to duration-proportional). Output: `duration_plan.json` +
+   `script_plan.json` (hook, sections with scene ids/purposes/budgets).
+5. **Script generation** — one llama.cpp call writes the original narration
+   in the selected language: per-section evidence + word budgets + content-
+   type style rules; paraphrase (never verbatim transcript), no invented
+   facts, natural Hindi/Bengali rather than word-for-word translation.
+   Output: `script.json` (sections, full text, word count, estimated
+   duration = words ÷ WPM × 60).
+6. **Quality control** — `script_quality.json`: deterministic checks
+   (language script, length, scene validity, chronology, repetition,
+   source copying via verbatim n-gram runs, ungrounded numbers/claims,
+   empty/garbage rejection) and a documented 0-100 score — grounding 25%,
+   coverage 20%, coherence 15%, duration fit 20%, chronology 10%, language
+   5%, originality 5%.
+7. Success → **script_ready** with the run summary in SQLite; all artifacts
+   live under `analysis/story/` with relative paths only. Failure → the run
+   and job are `failed`, Phase 5 artifacts are removed (Phase 3/4 assets
+   are preserved), and the project returns to **analyzed** for retry.
+
+**LLM lifecycle (8 GB policy):** llama.cpp is spawned per generation with a
+hard timeout and exits afterwards — one model in RAM at a time, nothing
+resident between jobs, `PROCESSING_CONCURRENCY=1`.
+
+## Phase 5 limitations (honest)
+
+- **No TTS / subtitle sync / render yet** — the pipeline ends at
+  SCRIPT_READY. The estimated narration duration is `words ÷ WPM`, not real
+  audio timing.
+- **No visual understanding model** — the LLM only sees transcript/OCR
+  text and numeric visual metadata, never the frames themselves. It is
+  explicitly told not to describe visible objects that the evidence does
+  not support.
+- Story/script quality depends on the local model: a small quantized GGUF
+  gives good grounding but cannot match a frontier model. The QC stage
+  flags empty, copied, repetitive, out-of-language or ungrounded output;
+  `llm_unavailable` is never faked.
 - The worker queue is in-process: jobs do not survive a backend restart
-  (a queued row would remain `queued`; re-run analyze to retry; a stale
-  `analyzing` project is auto-recovered to `prepared` on the next call).
-- Progress is honest but stage-weighted: byte-based for the transfer,
-  duration-weighted for each FFmpeg step, frame/segment-based per AI stage.
+  (a queued row would remain `queued`; re-run generate to retry; a stale
+  `scripting` project is auto-recovered to `analyzed` on the next call).
 - Real-FFmpeg integration tests skip when FFmpeg is absent (they run on
-  your PC); the deterministic fake-binary suite covers the full lifecycle.
+  your PC); the deterministic fake-binary/fake-LLM suite covers the full
+  lifecycle.
 
 ## Roadmap
 
@@ -463,13 +579,14 @@ auto-rotating. Project ids are attached via context; secrets are never logged.
    SHA-256 fingerprints, FFprobe metadata, READY/FAILED lifecycle.
 3. **Phase 3 (done)** — preprocessing & analysis assets (optimized copy,
    thumbnail, 16 kHz WAV) + single-job background worker.
-4. **Phase 4 (this phase)** — on-device analysis: scene detection, STT,
+4. **Phase 4 (done)** — on-device analysis: scene detection, STT,
    OCR, deterministic visual metadata, timeline alignment + context
    aggregation → ANALYZED.
-5. **Phase 5** — story understanding, duration selection, script
-   generation, TTS narration, subtitle sync.
-6. **Phase 6** — audio mixing, FFmpeg rendering, quality control, queue
-   hardening, cleanup polish.
+5. **Phase 5 (this phase)** — story understanding, important-scene
+   selection, duration-aware script generation (en/hi/bn) with
+   deterministic QC → SCRIPT_READY.
+6. **Phase 6** — TTS narration, subtitle sync, audio mixing, FFmpeg
+   rendering, quality control, queue hardening, cleanup polish.
 
 See `docs/architecture.md` for the full pipeline design.
 
@@ -489,7 +606,10 @@ See `docs/architecture.md` for the full pipeline design.
 | Analysis: “Whisper model not installed”        | Run `scripts\download_whisper_model.bat tiny` once (no API key); analysis still completes without speech |
 | Analysis: “OCR unavailable / Tesseract…”       | `winget install UB-Mannheim.TesseractOCR`, or set `TESSERACT_PATH`; analysis still completes without OCR |
 | Analysis fails (scene detection)               | Check `logs/errors.log`; Phase 3 assets are kept and the project returns to PREPARED — retry Analyze |
-| Project stuck at `preprocessing`/`analyzing` after restart | In-process queue lost the job; restart the stage (a stale analyzing project auto-recovers) |
+| Generate shows `llm_unavailable`              | Install llama.cpp (`winget install llama.cpp` or the GitHub release) and/or set `LLAMA_CPP_PATH` in `.env`; restart the backend |
+| Generate shows `model_download_required`      | Run `scripts\download_llm_model.bat` once (no API key, ~1 GB) and/or set `LLAMA_MODEL_PATH`; the app never auto-downloads |
+| Generate fails / empty script                  | Check the QC report (`/api/projects/{id}/script-quality`) and `logs/errors.log`; the project returns to ANALYZED — retry, or raise `LLAMA_MAX_TOKENS` |
+| Project stuck at `preprocessing`/`analyzing`/`scripting` after restart | In-process queue lost the job; restart the stage (a stale analyzing/scripting project auto-recovers) |
 | Port 8000 busy                                 | Change `BACKEND_PORT` in `.env`                                      |
 
 ## Security foundations

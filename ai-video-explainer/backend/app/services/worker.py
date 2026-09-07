@@ -27,11 +27,13 @@ from app.database.connection import Database
 from app.database.repositories.analysis import AnalysisRepository
 from app.database.repositories.jobs import JobRepository
 from app.database.repositories.projects import ProjectRepository
+from app.database.repositories.scripts import ScriptRepository
 from app.models.enums import JobStatus, PipelineStage, ProjectStatus
 from app.services.analysis import AnalysisService, _STAGE_LABELS
 from app.services.ffmpeg import FfmpegService
 from app.services.preprocess import PreprocessService
 from app.services.storage import StorageService
+from app.services.story import StoryService, _STAGE_LABELS as _SCRIPT_STAGE_LABELS
 from app.utils.errors import ExplainerError, ProjectNotFoundError
 from app.utils.logging import get_logger, log_context
 
@@ -144,19 +146,22 @@ class ProcessingWorker:
             logger.info("Started processing job %s (stage=%s).", job_id, job["stage"])
 
             try:
-                # Fail fast with a clean, recorded error when FFmpeg is gone.
-                ffmpeg_status = self._ffmpeg.require()
-
                 if job["stage"] == PipelineStage.PREPROCESS.value:
+                    # Fail fast with a clean, recorded error when FFmpeg is gone.
+                    ffmpeg_status = self._ffmpeg.require()
                     self._run_preprocess(
                         projects, jobs, project_id, job_id, project,
                         str(ffmpeg_status.ffmpeg_path),
                     )
                 elif job["stage"] == PipelineStage.ANALYSIS.value:
+                    ffmpeg_status = self._ffmpeg.require()
                     self._run_analysis(
                         projects, jobs, project_id, job_id, project,
                         str(ffmpeg_status.ffmpeg_path),
                     )
+                elif job["stage"] == PipelineStage.SCRIPT_GENERATION.value:
+                    # No FFmpeg needed: the LLM pipeline works on JSON + frames.
+                    self._run_script(projects, jobs, project_id, job_id, project)
                 else:  # pragma: no cover - future stages not wired yet
                     raise ExplainerError(
                         f"Pipeline stage '{job['stage']}' is not implemented yet."
@@ -265,6 +270,68 @@ class ProcessingWorker:
             return
         logger.info("Job %s completed; project %s ANALYZED.", job_id, project_id)
 
+    def _run_script(
+        self, projects, jobs, project_id, job_id, project,
+    ) -> None:
+        script_repo = ScriptRepository(self._db)
+        run = script_repo.latest_for_project(project_id)
+        run_id = run["id"] if run and run["status"] in ("queued", "running") else None
+        if run_id:
+            script_repo.update(
+                run_id,
+                status="running",
+                started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+        service = StoryService(self._settings, self._storage)
+
+        def tick(progress: float, stage: str | None = None) -> None:
+            jobs.update_progress(job_id, progress)
+            projects.update(project_id, progress=progress)
+            if run_id and stage:
+                script_repo.update(
+                    run_id,
+                    current_stage=_SCRIPT_STAGE_LABELS.get(stage, stage),
+                )
+
+        summary = service.run(
+            project,
+            language=run["language"] if run else project.get("language", "en"),
+            target_duration_seconds=(
+                run["target_duration_seconds"] if run
+                else int(project.get("target_duration_seconds") or 180)
+            ),
+            progress_callback=tick,
+        )
+        try:
+            projects.update(
+                project_id,
+                status=ProjectStatus.SCRIPT_READY,
+                progress=100.0,
+                error_message=None,
+            )
+            if run_id:
+                script_repo.update(
+                    run_id,
+                    status="completed",
+                    current_stage=None,
+                    completed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    content_type=summary.get("content_type"),
+                    content_type_confidence=summary.get("content_type_confidence"),
+                    selected_scene_count=summary.get("selected_scene_count"),
+                    word_count=summary.get("word_count"),
+                    quality_score=summary.get("quality_score"),
+                    estimated_duration_seconds=summary.get("estimated_duration_seconds"),
+                    warnings=summary.get("warnings", []),
+                )
+            jobs.update_status(job_id, status=JobStatus.COMPLETED, progress=100.0)
+        except ProjectNotFoundError:
+            logger.info(
+                "Project %s was deleted during job %s; dropping result.",
+                project_id, job_id,
+            )
+            return
+        logger.info("Job %s completed; project %s SCRIPT_READY.", job_id, project_id)
+
     def _fail(
         self,
         projects: ProjectRepository,
@@ -278,12 +345,14 @@ class ProcessingWorker:
         """Record a job failure; return the project to its retry state.
 
         Preprocess failure -> READY (assets gone). Analysis failure ->
-        PREPARED (Phase 3 assets are preserved; only Phase 4 artifacts are
-        cleared) so Analyze can be retried without re-uploading.
+        PREPARED (Phase 3 assets preserved; Phase 4 artifacts cleared).
+        Script failure -> ANALYZED (Phase 4 results preserved; Phase 5
+        artifacts cleared) so generation can be retried.
         """
         return_status = (
             ProjectStatus.READY if stage == PipelineStage.PREPROCESS.value
-            else ProjectStatus.PREPARED
+            else ProjectStatus.PREPARED if stage == PipelineStage.ANALYSIS.value
+            else ProjectStatus.ANALYZED
         )
         try:
             try:
@@ -303,6 +372,17 @@ class ProcessingWorker:
                 run = AnalysisRepository(self._db).latest_for_project(project_id)
                 if run and run["status"] in ("queued", "running"):
                     AnalysisRepository(self._db).update(
+                        run["id"],
+                        status="failed",
+                        current_stage=None,
+                        completed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        error_message=message,
+                    )
+            if stage == PipelineStage.SCRIPT_GENERATION.value:
+                StoryService(self._settings, self._storage).cleanup_artifacts(project_id)
+                run = ScriptRepository(self._db).latest_for_project(project_id)
+                if run and run["status"] in ("queued", "running"):
+                    ScriptRepository(self._db).update(
                         run["id"],
                         status="failed",
                         current_stage=None,

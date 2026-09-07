@@ -13,7 +13,7 @@ def test_backend_starts_and_root_responds(settings) -> None:
         assert response.status_code == 200
         body = response.json()
         assert body["app"] == settings.app_name
-        assert body["phase"] == 4
+        assert body["phase"] == 5
         assert "/api/health" in body["api"].values()
         assert "/api/projects/upload" in body["api"].values()
         assert "/api/projects/{id}/preprocess" in body["api"].values()
@@ -73,7 +73,7 @@ def test_system_status_reports_capabilities(client: TestClient) -> None:
     assert worker["active_job"] is None
 
     # Phase marker + upload limits + preprocessing settings advertised
-    assert body["phase"] == "4"
+    assert body["phase"] == "5"
     assert body["limits"]["max_upload_size_mb"] > 0
     assert body["limits"]["allowed_video_extensions"]
     assert body["limits"]["upload_chunk_size_bytes"] > 0

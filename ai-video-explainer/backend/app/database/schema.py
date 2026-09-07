@@ -91,6 +91,35 @@ CREATE INDEX IF NOT EXISTS idx_analysis_project_id
     ON analysis_results (project_id);
 CREATE INDEX IF NOT EXISTS idx_analysis_project_status
     ON analysis_results (project_id, status);
+
+CREATE TABLE IF NOT EXISTS script_runs (
+    id                       TEXT PRIMARY KEY,
+    project_id               TEXT NOT NULL
+                             REFERENCES projects (id) ON DELETE CASCADE,
+    status                   TEXT NOT NULL DEFAULT 'queued',
+    current_stage            TEXT,
+    started_at               TEXT,
+    completed_at             TEXT,
+    language                 TEXT,
+    target_duration_seconds  INTEGER,
+    content_type             TEXT,
+    content_type_confidence  REAL,
+    selected_scene_count     INTEGER,
+    word_count               INTEGER,
+    quality_score            INTEGER,
+    estimated_duration_seconds REAL,
+    generation_fingerprint   TEXT,
+    analysis_fingerprint     TEXT,
+    error_message            TEXT,
+    warnings                 TEXT,
+    created_at               TEXT NOT NULL,
+    updated_at               TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_script_runs_project_id
+    ON script_runs (project_id);
+CREATE INDEX IF NOT EXISTS idx_script_runs_project_status
+    ON script_runs (project_id, status);
 """
 
 #: Columns added after the initial Phase 1 release, applied by

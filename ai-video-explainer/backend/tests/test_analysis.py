@@ -504,7 +504,7 @@ def test_analysis_jobs_run_serially(settings, tmp_path, monkeypatch, determinist
 def test_system_status_reports_analysis_capabilities(client) -> None:
     test_client, _ = client
     body = test_client.get("/api/system/status").json()
-    assert body["phase"] == "4"
+    assert body["phase"] == "5"
     analysis = body["analysis"]
     assert analysis["scene_detection"]["engine"] == "ffmpeg-select"
     assert analysis["scene_detection"]["available"] is True  # fake ffmpeg detected

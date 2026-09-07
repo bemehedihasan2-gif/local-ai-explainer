@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.health import router as health_router
 from app.api.projects import router as projects_router
+from app.api.scripts import router as scripts_router
 from app.config import Settings, get_settings
 from app.database.connection import Database
 from app.services.ffmpeg import FfmpegService
@@ -95,11 +96,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         description=(
-            "Phase 4: a local, zero-cost AI video explainer. Videos stream "
+            "Phase 5: a local, zero-cost AI video explainer. Videos stream "
             "to disk, are validated with FFprobe, preprocessed into analysis "
-            "assets, then analyzed entirely on-device (scene detection, "
-            "speech-to-text, OCR, visual metadata, aligned timeline). "
-            "Narration generation arrives in later phases."
+            "assets, analyzed entirely on-device (scene detection, "
+            "speech-to-text, OCR, visual metadata, aligned timeline), then "
+            "understood by a small local LLM which writes a duration-aware "
+            "narration script in English/Hindi/Bengali. TTS and final "
+            "rendering arrive in later phases."
         ),
         lifespan=lifespan,
     )
@@ -123,6 +126,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(projects_router)
+    app.include_router(scripts_router)
     register_exception_handlers(app)
 
     @app.get("/", include_in_schema=False)
@@ -130,7 +134,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "app": settings.app_name,
             "version": settings.app_version,
-            "phase": 4,
+            "phase": 5,
             "api": {
                 "health": "/api/health",
                 "system_status": "/api/system/status",
@@ -142,11 +146,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "analyze": "/api/projects/{id}/analyze",
                 "analysis": "/api/projects/{id}/analysis",
                 "timeline": "/api/projects/{id}/timeline",
+                "generate_script": "/api/projects/{id}/generate-script",
+                "story_status": "/api/projects/{id}/story-status",
+                "story": "/api/projects/{id}/story",
+                "selected_scenes": "/api/projects/{id}/selected-scenes",
+                "duration_plan": "/api/projects/{id}/duration-plan",
+                "script": "/api/projects/{id}/script",
+                "script_quality": "/api/projects/{id}/script-quality",
             },
             "docs": "/docs",
         }
 
-    logger.info("Application factory ready (phase 4).")
+    logger.info("Application factory ready (phase 5).")
     return app
 
 

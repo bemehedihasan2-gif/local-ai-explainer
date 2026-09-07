@@ -18,8 +18,14 @@ import {
   SUPPORTED_EXTENSIONS,
   type AnalysisRun,
   type DurationMinutes,
+  type DurationPlanDocument,
   type Language,
   type Project,
+  type ScriptDocument,
+  type ScriptQualityDocument,
+  type ScriptRun,
+  type SelectedScenesDocument,
+  type StoryDocument,
   type SystemStatus,
   type TimelineDocument,
 } from "./types";
@@ -43,6 +49,8 @@ const STATUS_LABEL: Record<string, string> = {
   prepared: "Prepared",
   analyzing: "Analyzing",
   analyzed: "Analyzed",
+  scripting: "Generating script",
+  script_ready: "Script ready",
   queued: "Queued",
   processing: "Processing",
   completed: "Completed",
@@ -103,11 +111,11 @@ const PIPELINE: { name: string; phase: string; done?: boolean }[] = [
   { name: "OCR", phase: "Phase 4", done: true },
   { name: "Vision Understanding", phase: "Phase 4", done: true },
   { name: "Timeline Alignment", phase: "Phase 4", done: true },
-  { name: "Story Understanding", phase: "Phase 5" },
-  { name: "Duration Selection", phase: "Phase 5" },
-  { name: "Script Generation", phase: "Phase 5" },
-  { name: "TTS Narration", phase: "Phase 5" },
-  { name: "Subtitle Generation", phase: "Phase 5" },
+  { name: "Story Understanding", phase: "Phase 5", done: true },
+  { name: "Duration Selection", phase: "Phase 5", done: true },
+  { name: "Script Generation", phase: "Phase 5", done: true },
+  { name: "TTS Narration", phase: "Phase 6" },
+  { name: "Subtitle Generation", phase: "Phase 6" },
   { name: "Audio Mixing", phase: "Phase 6" },
   { name: "FFmpeg Rendering", phase: "Phase 6" },
   { name: "Quality Control", phase: "Phase 6" },
@@ -135,6 +143,15 @@ export default function App() {
   const [view, setView] = useState<Project | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisRun | null>(null);
   const [timeline, setTimeline] = useState<TimelineDocument | null>(null);
+  const [scriptRun, setScriptRun] = useState<ScriptRun | null>(null);
+  const [story, setStory] = useState<StoryDocument | null>(null);
+  const [selectedScenes, setSelectedScenes] =
+    useState<SelectedScenesDocument | null>(null);
+  const [durationPlan, setDurationPlan] = useState<DurationPlanDocument | null>(null);
+  const [script, setScript] = useState<ScriptDocument | null>(null);
+  const [scriptQuality, setScriptQuality] = useState<ScriptQualityDocument | null>(null);
+  const [scriptLanguage, setScriptLanguage] = useState<Language>("en");
+  const [scriptDuration, setScriptDuration] = useState<DurationMinutes>(3);
 
   const [busyDelete, setBusyDelete] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -273,12 +290,37 @@ export default function App() {
     }
   };
 
-  const generate = (project: Project) => {
-    setNotice({
-      kind: "info",
-      title: "Generation is planned for Phases 5-6",
-      body: `"${project.original_filename}" is analyzed: scenes, speech, OCR and visual metadata are understood. Story understanding, script generation, narration (TTS), subtitles and rendering arrive in later phases — no fake processing is run here.`,
-    });
+  /* ---- Phase 5 story + script generation -------------------------- */
+
+  const [scriptBusy, setScriptBusy] = useState(false);
+
+  const startScript = async (project: Project) => {
+    setScriptBusy(true);
+    setNotice(null);
+    try {
+      const response = await api.generateScript(project.id, {
+        language: scriptLanguage,
+        target_duration_seconds: scriptDuration * 60,
+      });
+      if (response.idempotent) {
+        setNotice({
+          kind: "info",
+          title: "Explanation already ready",
+          body: response.message ?? "Existing results are still valid; nothing was re-run.",
+        });
+      }
+      setView(await api.getProject(project.id)); // -> scripting (or script_ready)
+      setProjects(await api.listProjects());
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : String(err);
+      setNotice({
+        kind: "error",
+        title: "Could not start script generation",
+        body: message,
+      });
+    } finally {
+      setScriptBusy(false);
+    }
   };
 
   /* ---- Phase 3 preprocessing -------------------------------------- */
@@ -334,14 +376,20 @@ export default function App() {
     }
   };
 
-  // While any project is being preprocessed/analyzed, poll project + history
-  // so the progress bar and status tags stay honest (1 s cadence, cheap).
+  // While any project is being preprocessed/analyzed/scripted, poll project
+  // + history so the progress bar and status tags stay honest (1 s cadence).
   const anyProcessing = projects.some(
-    (p) => p.status === "preprocessing" || p.status === "analyzing",
+    (p) =>
+      p.status === "preprocessing" ||
+      p.status === "analyzing" ||
+      p.status === "scripting",
   );
   useEffect(() => {
     const activeView =
-      view && (view.status === "preprocessing" || view.status === "analyzing");
+      view &&
+      (view.status === "preprocessing" ||
+        view.status === "analyzing" ||
+        view.status === "scripting");
     if (!anyProcessing && !activeView) return;
     const timer = window.setInterval(() => {
       void (async () => {
@@ -357,6 +405,15 @@ export default function App() {
                 // run row may not be visible yet; next tick retries
               }
             }
+            if (fresh.status === "scripting") {
+              // Live stage label (preparing evidence, understanding story,
+              // writing explanation, quality checking, ...).
+              try {
+                setScriptRun(await api.getStoryStatus(fresh.id));
+              } catch {
+                // run row may not be visible yet; next tick retries
+              }
+            }
           }
           setProjects(await api.listProjects());
         } catch {
@@ -367,12 +424,21 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [anyProcessing, view]);
 
-  // When a project reaches ANALYZED, load its run summary + timeline once.
-  const analyzedId = view?.status === "analyzed" ? view.id : null;
+  // When a project reaches ANALYZED or SCRIPT_READY, load its results once.
+  const analyzedId =
+    view && (view.status === "analyzed" || view.status === "script_ready")
+      ? view.id
+      : null;
   useEffect(() => {
     if (!analyzedId) {
       setAnalysis(null);
       setTimeline(null);
+      setScriptRun(null);
+      setStory(null);
+      setSelectedScenes(null);
+      setDurationPlan(null);
+      setScript(null);
+      setScriptQuality(null);
       return;
     }
     let cancelled = false;
@@ -386,11 +452,40 @@ export default function App() {
       } catch {
         // Assets may be missing (deleted project); leave the panel empty.
       }
+      if (view?.status !== "script_ready") return;
+      try {
+        const [run2, storyDoc, selected, plan, scriptDoc, quality] =
+          await Promise.all([
+            api.getStoryStatus(analyzedId),
+            api.getStory(analyzedId),
+            api.getSelectedScenes(analyzedId),
+            api.getDurationPlan(analyzedId),
+            api.getScript(analyzedId),
+            api.getScriptQuality(analyzedId),
+          ]);
+        if (cancelled) return;
+        setScriptRun(run2);
+        setStory(storyDoc);
+        setSelectedScenes(selected);
+        setDurationPlan(plan);
+        setScript(scriptDoc);
+        setScriptQuality(quality);
+        setScriptLanguage(scriptDoc.language);
+        setScriptDuration(
+          (scriptDoc.target_duration_seconds ?? 180) === 120
+            ? 2
+            : (scriptDoc.target_duration_seconds ?? 180) === 240
+              ? 4
+              : 3,
+        );
+      } catch {
+        // Script artifacts may be missing (deleted/replaced); leave empty.
+      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [analyzedId]);
+  }, [analyzedId, view?.status]);
 
   /* ---- history ---------------------------------------------------- */
 
@@ -598,7 +693,8 @@ export default function App() {
               <p className="hint" style={{ marginTop: 10, marginBottom: 0 }}>
                 Phase 3 adds preprocessing: after upload, "Prepare for analysis" queues a
                 single background worker to build the low-res analysis copy, poster
-                thumbnail and 16 kHz audio track. AI analysis arrives in later phases.
+                thumbnail and 16 kHz audio track. Then Phase 4 analyzes it and Phase 5
+                writes the narration script.
               </p>
             </section>
 
@@ -613,9 +709,21 @@ export default function App() {
                   analyzeBusy={analyzeBusy}
                   analysis={analysis}
                   timeline={timeline}
+                  scriptRun={scriptRun}
+                  story={story}
+                  selectedScenes={selectedScenes}
+                  durationPlan={durationPlan}
+                  script={script}
+                  scriptQuality={scriptQuality}
+                  scriptLanguage={scriptLanguage}
+                  scriptDuration={scriptDuration}
+                  scriptBusy={scriptBusy}
+                  llm={system?.llm ?? null}
                   onStartPreprocess={() => void startPreprocess(view)}
                   onStartAnalysis={() => void startAnalysis(view)}
-                  onGenerate={() => generate(view)}
+                  onGenerate={() => void startScript(view)}
+                  onScriptLanguage={setScriptLanguage}
+                  onScriptDuration={setScriptDuration}
                 />
               )}
 
@@ -623,7 +731,7 @@ export default function App() {
                 <div className="flex-between">
                   <h2>Pipeline roadmap</h2>
                   <span className="chip-status">
-                    <span className="dot" /> upload · preprocess · analysis live
+                    <span className="dot" /> upload · preprocess · analysis · script live
                   </span>
                 </div>
                 <ul className="pipeline">
@@ -722,10 +830,12 @@ export default function App() {
           </section>
 
           <footer className="footer-note">
-            Local AI Video Explainer — Phase 4: upload, preprocessing and on-device
+            Local AI Video Explainer — Phase 5: upload, preprocessing, on-device
             analysis (scene detection, speech-to-text, OCR, visual metadata, aligned
-            timeline). Streaming uploads, SHA-256 fingerprints, SQLite metadata, single
-            background worker. No paid APIs, no cloud models, no secrets in source.
+            timeline) and a story + script written by a small local LLM (llama.cpp,
+            English/Hindi/Bengali, 2-4 minute targets). Streaming uploads, SHA-256
+            fingerprints, SQLite metadata, single background worker. No paid APIs,
+            no cloud models, no secrets in source.
           </footer>
         </>
       )}
@@ -743,18 +853,42 @@ function ProjectCard({
   analyzeBusy,
   analysis,
   timeline,
+  scriptRun,
+  story,
+  selectedScenes,
+  durationPlan,
+  script,
+  scriptQuality,
+  scriptLanguage,
+  scriptDuration,
+  scriptBusy,
+  llm,
   onStartPreprocess,
   onStartAnalysis,
   onGenerate,
+  onScriptLanguage,
+  onScriptDuration,
 }: {
   project: Project;
   prepBusy: boolean;
   analyzeBusy: boolean;
   analysis: AnalysisRun | null;
   timeline: TimelineDocument | null;
+  scriptRun: ScriptRun | null;
+  story: StoryDocument | null;
+  selectedScenes: SelectedScenesDocument | null;
+  durationPlan: DurationPlanDocument | null;
+  script: ScriptDocument | null;
+  scriptQuality: ScriptQualityDocument | null;
+  scriptLanguage: Language;
+  scriptDuration: DurationMinutes;
+  scriptBusy: boolean;
+  llm: SystemStatus["llm"] | null;
   onStartPreprocess: () => void;
   onStartAnalysis: () => void;
   onGenerate: () => void;
+  onScriptLanguage: (language: Language) => void;
+  onScriptDuration: (duration: DurationMinutes) => void;
 }) {
   const resolution =
     project.width && project.height ? `${project.width} × ${project.height}` : "—";
@@ -819,7 +953,11 @@ function ProjectCard({
           ? "Analyzing video locally"
           : project.status === "analyzed"
             ? "Video analyzed"
-            : "Video";
+            : project.status === "scripting"
+              ? "Writing the explanation"
+              : project.status === "script_ready"
+                ? "Explanation ready"
+                : "Video";
 
   return (
     <section
@@ -937,20 +1075,459 @@ function ProjectCard({
       )}
 
       {project.status === "analyzed" && (
-        <button
-          type="button"
-          className="btn btn-primary"
-          onClick={onGenerate}
-          title="Story understanding, script generation, narration and rendering arrive in later phases."
-        >
-          Generate explanation
-        </button>
+        <>
+          {project.error_message && (
+            <p className="field-error" role="alert">
+              A previous script generation failed: {project.error_message} The
+              analysis is still intact — you can try again.
+            </p>
+          )}
+          <GeneratePanel
+            analysis={analysis}
+            llm={llm}
+            language={scriptLanguage}
+            duration={scriptDuration}
+            busy={scriptBusy}
+            onLanguage={onScriptLanguage}
+            onDuration={onScriptDuration}
+            onGenerate={onGenerate}
+          />
+        </>
       )}
 
-      {project.status === "analyzed" && analysis && (
-        <AnalysisPanel project={project} analysis={analysis} timeline={timeline} />
+      {project.status === "scripting" && (
+        <ScriptingPanel
+          project={project}
+          scriptRun={scriptRun}
+          language={scriptLanguage}
+          duration={scriptDuration}
+        />
       )}
+
+      {project.status === "script_ready" && (
+        <>
+          {project.error_message && (
+            <p className="field-error" role="alert">
+              {project.error_message}
+            </p>
+          )}
+          <ScriptPanel
+            project={project}
+            scriptRun={scriptRun}
+            story={story}
+            selectedScenes={selectedScenes}
+            durationPlan={durationPlan}
+            script={script}
+            scriptQuality={scriptQuality}
+            language={scriptLanguage}
+            duration={scriptDuration}
+            busy={scriptBusy}
+            llm={llm}
+            onLanguage={onScriptLanguage}
+            onDuration={onScriptDuration}
+            onGenerate={onGenerate}
+          />
+        </>
+      )}
+
+      {(project.status === "analyzed" || project.status === "script_ready") &&
+        analysis && (
+          <AnalysisPanel
+            project={project}
+            analysis={analysis}
+            timeline={timeline}
+            selectedScenes={selectedScenes}
+            durationPlan={durationPlan}
+          />
+        )}
     </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Phase 5: generation controls + live progress + script preview     */
+/* ------------------------------------------------------------------ */
+
+function GeneratePanel({
+  analysis,
+  llm,
+  language,
+  duration,
+  busy,
+  onLanguage,
+  onDuration,
+  onGenerate,
+}: {
+  analysis: AnalysisRun | null;
+  llm: SystemStatus["llm"] | null;
+  language: Language;
+  duration: DurationMinutes;
+  busy: boolean;
+  onLanguage: (language: Language) => void;
+  onDuration: (duration: DurationMinutes) => void;
+  onGenerate: () => void;
+}) {
+  return (
+    <div className="generate-panel mt-12">
+      <h3 className="panel-title">Generate explanation</h3>
+      <p className="hint" style={{ marginTop: 4 }}>
+        Analysis complete:{" "}
+        <strong>{analysis?.scene_count ?? "—"} scenes</strong>
+        <span className="dot-sep">·</span>
+        speech{" "}
+        <strong>
+          {analysis?.transcript_available
+            ? "available"
+            : "unavailable / skipped"}
+        </strong>
+        <span className="dot-sep">·</span>
+        OCR{" "}
+        <strong>{analysis?.ocr_available ? "available" : "none"}</strong>
+      </p>
+
+      <div className="field mt-12">
+        <label htmlFor="script-language-group">Narration language</label>
+        <div className="option-row" id="script-language-group">
+          {LANGUAGES.map((lang) => (
+            <label key={lang.code}>
+              <input
+                type="radio"
+                name="script-language"
+                value={lang.code}
+                checked={language === lang.code}
+                onChange={() => onLanguage(lang.code)}
+                disabled={busy}
+              />
+              <span>{lang.label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="field">
+        <label htmlFor="script-duration-group">Explanation duration</label>
+        <div className="option-row" id="script-duration-group">
+          {DURATIONS.map((minutes) => (
+            <label key={minutes}>
+              <input
+                type="radio"
+                name="script-duration"
+                value={minutes}
+                checked={duration === minutes}
+                onChange={() => onDuration(minutes)}
+                disabled={busy}
+              />
+              <span>
+                {minutes} min<small>≈ {minutes * 60} s narration target</small>
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {llm && !llm.available && (
+        <div className="warn-box">
+          <strong>Local language model not ready</strong>
+          <p style={{ margin: "6px 0 0" }}>
+            {llm.setup_hint ??
+              "Set up llama.cpp + a small quantized GGUF model (see README, Phase 5 - first-run model setup). The app never downloads models automatically."}
+          </p>
+        </div>
+      )}
+
+      <button
+        type="button"
+        className="btn btn-primary mt-12"
+        onClick={onGenerate}
+        disabled={busy || (llm != null && !llm.available)}
+      >
+        {busy ? "Queuing…" : "Generate explanation"}
+      </button>
+      <p className="hint" style={{ marginTop: 8, marginBottom: 0 }}>
+        Runs the Phase 5 local pipeline: story understanding, important-scene
+        selection, duration planning and an original narration script in your
+        chosen language — all on this PC, no cloud.
+      </p>
+    </div>
+  );
+}
+
+function ScriptingPanel({
+  project,
+  scriptRun,
+  language,
+  duration,
+}: {
+  project: Project;
+  scriptRun: ScriptRun | null;
+  language: Language;
+  duration: DurationMinutes;
+}) {
+  return (
+    <div className="upload-progress" role="progressbar" aria-valuenow={Math.round(project.progress)}>
+      <div className="flex-between">
+        <strong>
+          Writing a {duration}-minute {LANGUAGE_LABEL[language] ?? language}{" "}
+          explanation…
+        </strong>
+        <span className="muted">{Math.round(project.progress)}%</span>
+      </div>
+      <span className="progress-track">
+        <i style={{ width: `${project.progress}%` }} />
+      </span>
+      <p className="hint">
+        {scriptRun?.current_stage ?? "Working"} — evidence preparation, story
+        understanding, scene scoring, duration planning, writing and quality
+        checking run one after another on a single worker thread.
+      </p>
+    </div>
+  );
+}
+
+function ScriptPanel({
+  project,
+  scriptRun,
+  story,
+  selectedScenes,
+  durationPlan,
+  script,
+  scriptQuality,
+  language,
+  duration,
+  busy,
+  llm,
+  onLanguage,
+  onDuration,
+  onGenerate,
+}: {
+  project: Project;
+  scriptRun: ScriptRun | null;
+  story: StoryDocument | null;
+  selectedScenes: SelectedScenesDocument | null;
+  durationPlan: DurationPlanDocument | null;
+  script: ScriptDocument | null;
+  scriptQuality: ScriptQualityDocument | null;
+  language: Language;
+  duration: DurationMinutes;
+  busy: boolean;
+  llm: SystemStatus["llm"] | null;
+  onLanguage: (language: Language) => void;
+  onDuration: (duration: DurationMinutes) => void;
+  onGenerate: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const copyScript = async () => {
+    if (!script?.full_text) return;
+    try {
+      await navigator.clipboard.writeText(script.full_text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // Clipboard may be blocked; nothing else to do.
+    }
+  };
+
+  const summaryRows = [
+    { label: "Language", value: script?.language_label ?? LANGUAGE_LABEL[language] },
+    {
+      label: "Target duration",
+      value: `${Math.round((script?.target_duration_seconds ?? duration * 60) / 60)} min`,
+    },
+    {
+      label: "Estimated narration",
+      value: scriptQuality
+        ? `≈ ${clock(scriptQuality.estimated_duration_seconds)} @ ${scriptQuality.narration_wpm} wpm`
+        : "—",
+    },
+    { label: "Word count", value: script ? String(script.word_count) : "—" },
+    {
+      label: "Quality score",
+      value: scriptQuality != null ? `${scriptQuality.quality_score} / 100` : "—",
+    },
+    {
+      label: "Content type",
+      value: story ? `${story.content_type.replace(/_/g, " ")} (${Math.round(story.content_type_confidence * 100)}%)` : "—",
+    },
+    {
+      label: "Important scenes",
+      value: selectedScenes ? String(selectedScenes.summary.selected_count) : "—",
+    },
+    {
+      label: "Completed",
+      value: scriptRun?.completed_at ? formatWhen(scriptRun.completed_at) : "—",
+    },
+  ];
+
+  return (
+    <div className="script-panel mt-12">
+      <h3 className="panel-title">Explanation ready</h3>
+      <div className="kv-grid">
+        {summaryRows.map((row) => (
+          <div className="kv" key={row.label}>
+            <span className="kv-key">{row.label}</span>
+            <span className="kv-value" title={row.value}>
+              {row.value}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {story && (
+        <>
+          <h3 className="panel-title">Story overview</h3>
+          <p className="story-premise">{story.premise}</p>
+          {story.key_turning_points.length > 0 && (
+            <p className="hint" style={{ marginTop: 6 }}>
+              Turning points:{" "}
+              {story.key_turning_points.map((point) => point.text).join(" · ")}
+            </p>
+          )}
+        </>
+      )}
+
+      {selectedScenes && selectedScenes.selected.length > 0 && (
+        <>
+          <h3 className="panel-title">Important scenes</h3>
+          <div className="scene-list">
+            {selectedScenes.selected.map((scene) => (
+              <div className="scene-row" key={scene.scene_id}>
+                {scene.representative_frame ? (
+                  <img
+                    className="scene-frame"
+                    src={analysisFrameUrl(project.id, scene.scene_id)}
+                    alt={`Scene ${scene.scene_id} representative frame`}
+                    loading="lazy"
+                  />
+                ) : (
+                  <div className="scene-frame scene-frame-empty" aria-hidden>
+                    no frame
+                  </div>
+                )}
+                <div className="scene-body">
+                  <div className="scene-head">
+                    <strong>Scene #{scene.scene_id}</strong>
+                    <span className="muted">
+                      {clock(scene.start)} → {clock(scene.end)}
+                      <span className="dot-sep">·</span>
+                      {scene.duration.toFixed(1)} s
+                    </span>
+                    <span className="tag tag-density" title="Deterministic importance score (0-1)">
+                      importance {scene.importance_score.toFixed(2)}
+                    </span>
+                    {durationPlan && (
+                      <span className="tag tag-budget" title="Narration word budget">
+                        {durationPlan.scenes.find(
+                          (row) => row.scene_id === scene.scene_id,
+                        )?.word_budget ?? 0} words
+                      </span>
+                    )}
+                  </div>
+                  <div className="scene-meta muted">
+                    {scene.reasons.join(" · ")}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {script && (
+        <>
+          <div className="flex-between">
+            <h3 className="panel-title" style={{ marginBottom: 0 }}>
+              Script
+            </h3>
+            <button type="button" className="btn btn-sm" onClick={() => void copyScript()}>
+              {copied ? "Copied ✓" : "Copy script"}
+            </button>
+          </div>
+          <div className="script-text">
+            {script.full_text
+              .split("\n\n")
+              .filter(Boolean)
+              .map((paragraph, index) => (
+                <p key={index}>{paragraph}</p>
+              ))}
+          </div>
+        </>
+      )}
+
+      {scriptQuality && (
+        <>
+          <h3 className="panel-title">Quality check</h3>
+          <div className="quality-checks">
+            {scriptQuality.checks.map((check) => (
+              <span key={check.check} className={`quality-chip ${check.passed ? "ok" : "warn"}`}>
+                {check.passed ? "✓" : "!"} {check.check.replace(/_/g, " ")}
+              </span>
+            ))}
+          </div>
+          {scriptQuality.warnings.length > 0 && (
+            <div className="warn-box">
+              <strong>Warnings</strong>
+              <ul>
+                {scriptQuality.warnings.map((warning, index) => (
+                  <li key={index}>{warning}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+
+      <div className="field mt-12">
+        <label htmlFor="regenerate-language-group">Regenerate in</label>
+        <div className="option-row" id="regenerate-language-group">
+          {LANGUAGES.map((lang) => (
+            <label key={lang.code}>
+              <input
+                type="radio"
+                name="regenerate-language"
+                value={lang.code}
+                checked={language === lang.code}
+                onChange={() => onLanguage(lang.code)}
+                disabled={busy}
+              />
+              <span>{lang.label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+      <div className="field">
+        <label htmlFor="regenerate-duration-group">As</label>
+        <div className="option-row" id="regenerate-duration-group">
+          {DURATIONS.map((minutes) => (
+            <label key={minutes}>
+              <input
+                type="radio"
+                name="regenerate-duration"
+                value={minutes}
+                checked={duration === minutes}
+                onChange={() => onDuration(minutes)}
+                disabled={busy}
+              />
+              <span>
+                {minutes} min<small>≈ {minutes * 60} s</small>
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
+      <button
+        type="button"
+        className="btn btn-primary mt-12"
+        onClick={onGenerate}
+        disabled={busy || (llm != null && !llm.available)}
+      >
+        {busy ? "Queuing…" : "Regenerate explanation"}
+      </button>
+      <p className="hint" style={{ marginTop: 8, marginBottom: 0 }}>
+        Changing the language or duration re-runs the backend pipeline for
+        this video — previous results stay until the new run finishes.
+      </p>
+    </div>
   );
 }
 
@@ -962,11 +1539,28 @@ function AnalysisPanel({
   project,
   analysis: run,
   timeline,
+  selectedScenes,
+  durationPlan,
 }: {
   project: Project;
   analysis: AnalysisRun;
   timeline: TimelineDocument | null;
+  selectedScenes: SelectedScenesDocument | null;
+  durationPlan: DurationPlanDocument | null;
 }) {
+  const selectedById = new Map<number, { rank: number; importance: number; budget: number }>();
+  if (selectedScenes && durationPlan) {
+    for (const scene of selectedScenes.selected) {
+      selectedById.set(scene.scene_id, {
+        rank: selectedScenes.scenes.find((s) => s.scene_id === scene.scene_id)
+          ?.selected_rank ?? 0,
+        importance: scene.importance_score,
+        budget:
+          durationPlan.scenes.find((row) => row.scene_id === scene.scene_id)
+            ?.word_budget ?? 0,
+      });
+    }
+  }
   const speechLabel =
     run.transcript_available == null
       ? "—"
@@ -1017,46 +1611,73 @@ function AnalysisPanel({
       {timeline && timeline.scenes.length > 0 && (
         <>
           <h3 className="panel-title">Scene timeline</h3>
+          {selectedScenes && (
+            <p className="hint" style={{ marginTop: -2 }}>
+              Scenes chosen for the narration are highlighted with their
+              importance and word budget; the rest are skipped.
+            </p>
+          )}
           <div className="scene-list">
-            {timeline.scenes.map((scene) => (
-              <div className="scene-row" key={scene.scene_id}>
-                {scene.representative_frame ? (
-                  <img
-                    className="scene-frame"
-                    src={analysisFrameUrl(project.id, scene.scene_id)}
-                    alt={`Scene ${scene.scene_id} representative frame`}
-                    loading="lazy"
-                  />
-                ) : (
-                  <div className="scene-frame scene-frame-empty" aria-hidden>
-                    no frame
-                  </div>
-                )}
-                <div className="scene-body">
-                  <div className="scene-head">
-                    <strong>Scene #{scene.scene_id}</strong>
-                    <span className="muted">
-                      {clock(scene.start)} → {clock(scene.end)}
+            {timeline.scenes.map((scene) => {
+              const mark = selectedById.get(scene.scene_id);
+              return (
+                <div
+                  className={`scene-row ${mark ? "scene-row-selected" : selectedScenes ? "scene-row-skipped" : ""}`}
+                  key={scene.scene_id}
+                >
+                  {scene.representative_frame ? (
+                    <img
+                      className="scene-frame"
+                      src={analysisFrameUrl(project.id, scene.scene_id)}
+                      alt={`Scene ${scene.scene_id} representative frame`}
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="scene-frame scene-frame-empty" aria-hidden>
+                      no frame
+                    </div>
+                  )}
+                  <div className="scene-body">
+                    <div className="scene-head">
+                      <strong>Scene #{scene.scene_id}</strong>
+                      <span className="muted">
+                        {clock(scene.start)} → {clock(scene.end)}
+                        <span className="dot-sep">·</span>
+                        {scene.duration.toFixed(1)} s
+                      </span>
+                      <span className="tag tag-density" title="Deterministic evidence score (0-100)">
+                        density {scene.information_density}
+                      </span>
+                      {mark && (
+                        <>
+                          <span className="tag tag-selected" title="Selected for narration">
+                            selected #{mark.rank}
+                          </span>
+                          <span className="tag tag-budget" title="Narration word budget">
+                            importance {mark.importance.toFixed(2)} · {mark.budget} words
+                          </span>
+                        </>
+                      )}
+                      {!mark && selectedScenes && (
+                        <span className="tag tag-skipped" title="Not narrated">
+                          skipped
+                        </span>
+                      )}
+                    </div>
+                    <div className="scene-meta muted">
+                      Speech: {scene.speech_present ? "available" : "unavailable"}
                       <span className="dot-sep">·</span>
-                      {scene.duration.toFixed(1)} s
-                    </span>
-                    <span className="tag tag-density" title="Deterministic evidence score (0-100)">
-                      density {scene.information_density}
-                    </span>
-                  </div>
-                  <div className="scene-meta muted">
-                    Speech: {scene.speech_present ? "available" : "unavailable"}
-                    <span className="dot-sep">·</span>
-                    OCR: {scene.ocr_present ? "available" : "none"}
-                    <span className="dot-sep">·</span>
-                    Visual:{" "}
-                    {scene.visual
-                      ? `brightness ${Math.round(scene.visual.brightness)} · blur ${scene.visual.blur_estimate.toFixed(2)}`
-                      : "—"}
+                      OCR: {scene.ocr_present ? "available" : "none"}
+                      <span className="dot-sep">·</span>
+                      Visual:{" "}
+                      {scene.visual
+                        ? `brightness ${Math.round(scene.visual.brightness)} · blur ${scene.visual.blur_estimate.toFixed(2)}`
+                        : "—"}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </>
       )}
@@ -1118,6 +1739,14 @@ function SystemCard({ system }: { system: SystemStatus }) {
     {
       label: "Visual analysis",
       value: `${system.analysis.visual.provider} (PIL metadata)`,
+    },
+    {
+      label: "Local LLM (story + script)",
+      value: system.llm.available
+        ? `${system.llm.provider} ready — ${system.llm.model_name ?? "model"} (${system.llm.threads} threads)`
+        : system.llm.model_available
+          ? "llama.cpp not found — generation disabled"
+          : "no GGUF model — generation disabled",
     },
     { label: "Max upload", value: `${system.limits.max_upload_size_mb} MB` },
     { label: "Supported", value: system.limits.allowed_video_extensions.join(" ") },

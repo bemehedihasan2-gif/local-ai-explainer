@@ -34,6 +34,8 @@ export type ProjectStatus =
   | "prepared"
   | "analyzing"
   | "analyzed"
+  | "scripting"
+  | "script_ready"
   | "queued"
   | "processing"
   | "completed"
@@ -105,6 +107,166 @@ export interface AnalysisRun {
   processing_seconds: number | null;
   error_message: string | null;
   warnings: string[];
+}
+
+export type ContentType =
+  | "movie"
+  | "short_film"
+  | "gameplay"
+  | "education"
+  | "news"
+  | "sports"
+  | "tutorial"
+  | "lecture"
+  | "screen_recording"
+  | "nature"
+  | "animal"
+  | "social_video"
+  | "general";
+
+// Phase 5: one story+script run per project (summary only - payloads live
+// in JSON files under analysis/story/, never in the API).
+export interface ScriptRun {
+  id: string;
+  project_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  current_stage: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  language: Language;
+  target_duration_seconds: number;
+  content_type: ContentType | null;
+  content_type_confidence: number | null;
+  selected_scene_count: number | null;
+  word_count: number | null;
+  quality_score: number | null;
+  estimated_duration_seconds: number | null;
+  error_message: string | null;
+  warnings: string[];
+}
+
+export interface GenerateScriptResponse {
+  idempotent: boolean;
+  status: string;
+  script_run_id?: string;
+  job?: Job;
+  script_run?: ScriptRun;
+  message?: string;
+}
+
+export interface StoryDocument {
+  schema_version: number;
+  content_type: ContentType;
+  content_type_confidence: number;
+  premise: string;
+  main_entities: string[];
+  locations: string[];
+  chronological_events: { text: string; scene_ids: number[] }[];
+  key_turning_points: { text: string; scene_ids: number[] }[];
+  beginning: { text: string; scene_ids: number[] }[];
+  middle: { text: string; scene_ids: number[] }[];
+  ending: { text: string; scene_ids: number[] }[];
+  cause_effect: { cause: string; effect: string; scene_ids: number[] }[];
+  important_facts: { text: string; scene_ids: number[] }[];
+  uncertain_points: string[];
+  evidence_scene_ids: number[];
+  scene_count: number;
+  scene_scores: Record<string, number>;
+  warnings: string[];
+}
+
+export interface SelectedScene {
+  scene_id: number;
+  start: number;
+  end: number;
+  duration: number;
+  importance_score: number;
+  reasons: string[];
+  representative_frame: string | null;
+}
+
+export interface SelectedScenesDocument {
+  schema_version: number;
+  summary: {
+    scene_count: number;
+    selected_count: number;
+    selected_ids: number[];
+    max_selected_scenes: number;
+  };
+  scenes: {
+    scene_id: number;
+    importance_score: number;
+    selected: boolean;
+    selected_rank: number | null;
+    reasons: string[];
+  }[];
+  selected: SelectedScene[];
+  warnings: string[];
+}
+
+export interface DurationPlanDocument {
+  schema_version: number;
+  target_duration_seconds: number;
+  target_word_min: number;
+  target_word_max: number;
+  target_word_mid: number;
+  narration_wpm: number;
+  estimated_duration_seconds: number;
+  scenes: {
+    scene_id: number;
+    start: number;
+    end: number;
+    importance_score: number;
+    reasons: string[];
+    word_budget: number;
+    evidence: "speech" | "ocr" | "visual" | "none";
+    selected: boolean;
+  }[];
+  total_word_budget: number;
+  warnings: string[];
+}
+
+export interface ScriptSection {
+  scene_ids: number[];
+  purpose: string;
+  word_budget: number;
+  text: string;
+}
+
+export interface ScriptDocument {
+  schema_version: number;
+  language: Language;
+  language_label: string;
+  target_duration_seconds: number | null;
+  content_type: ContentType;
+  content_type_confidence: number | null;
+  sections: ScriptSection[];
+  full_text: string;
+  word_count: number;
+  estimated_duration_seconds: number;
+  warnings: string[];
+}
+
+export interface ScriptQualityDocument {
+  schema_version: number;
+  quality_score: number;
+  scores: {
+    grounding_score: number;
+    coverage_score: number;
+    coherence_score: number;
+    duration_fit_score: number;
+    chronology_score: number;
+    language_score: number;
+    originality_score: number;
+  };
+  formula: Record<string, number>;
+  checks: { check: string; passed: boolean; severity: string; message: string }[];
+  warnings: string[];
+  word_count: number;
+  target_word_min: number;
+  target_word_max: number;
+  estimated_duration_seconds: number;
+  narration_wpm: number;
 }
 
 export interface AnalyzeResponse {
@@ -232,6 +394,19 @@ export interface SystemStatus {
       ocr_frame_limit: number;
       visual_analysis_enabled: boolean;
     };
+  };
+  llm: {
+    provider: string;
+    available: boolean;
+    executable_available: boolean;
+    model_available: boolean;
+    model_name: string | null;
+    threads: number | null;
+    context_size: number | null;
+    max_tokens: number | null;
+    temperature: number | null;
+    setup_hint: string | null;
+    note: string;
   };
   phase: string;
   message: string;
