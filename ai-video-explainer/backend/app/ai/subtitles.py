@@ -1,11 +1,9 @@
-"""Subtitles: generate synchronized subtitle cues (SRT) aligned with the
-narration audio and, optionally, the original video timeline.
+"""Subtitles: generate synchronized subtitle cues (SRT / VTT) aligned with
+the *measured* narration audio, never with estimated word timing.
 
-Phase 1: interface only.
-
-Planned implementation (local): a segmenter that maps narration sentences to
-timestamps from the TTS audio (and/or forced alignment), producing an SRT
-file that later phases burn into the final MP4.
+Phase 1: interface only. Phase 6 implements the real generator in
+:mod:`app.services.subtitles` (consumed by the narration worker through
+:class:`app.services.narration.NarrationService`).
 """
 
 from __future__ import annotations
@@ -15,6 +13,13 @@ from app.models.enums import PipelineStage
 
 
 class SubtitleService(PipelineService):
+    """Registry marker for the subtitle stage.
+
+    The Phase 1 rule is preserved: ``execute()`` (the base implementation)
+    still refuses to fake work - Phase 6 subtitle generation runs through
+    the single worker and is driven by actual TTS audio durations.
+    """
+
     stage = PipelineStage.SUBTITLE_GENERATION
     name = "Subtitle Generation"
-    planned_for = "Phase 5"
+    planned_for = "Phase 6"

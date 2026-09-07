@@ -358,6 +358,86 @@ class ScriptConflictError(ExplainerError):
     default_message = "Script generation is already running for this project."
 
 
+class TTSEngineUnavailableError(ExplainerError):
+    """The local TTS executable is missing or not configured."""
+
+    status_code = 503
+    code = "tts_unavailable"
+    default_message = (
+        "Local text-to-speech is not available. Phase 6 uses Piper (the "
+        "'piper' CLI) with per-language voice models. The app never "
+        "downloads voices automatically - see the README 'Phase 6 - first-"
+        "run TTS setup' section for the explicit one-time install, or set "
+        "TTS_EXECUTABLE_PATH / TTS_VOICE_EN / TTS_VOICE_HI / TTS_VOICE_BN "
+        "in your .env file."
+    )
+
+
+class TTSVoiceMissingError(ExplainerError):
+    """No voice model is configured (or configured model file is missing)
+    for the requested language."""
+
+    status_code = 503
+    code = "voice_not_available"
+    default_message = (
+        "No Piper voice is configured for this language. Set the matching "
+        "TTS_VOICE_* path in .env to a local .onnx voice model and run the "
+        "explicit setup from the README ('Phase 6 - first-run TTS setup'). "
+        "No automatic download is performed."
+    )
+
+
+class TTSTimeoutError(ExplainerError):
+    """One Piper synthesis exceeded its configured timeout."""
+
+    status_code = 504
+    code = "tts_timeout"
+    default_message = "The local text-to-speech engine did not answer in time."
+
+
+class TTSGenerationError(ExplainerError):
+    """The Piper subprocess failed or produced unusable audio."""
+
+    status_code = 500
+    code = "tts_generation_failed"
+    default_message = "Local speech synthesis failed."
+
+
+class TTSAudioError(ExplainerError):
+    """A synthesized WAV segment is corrupt or has the wrong format."""
+
+    status_code = 500
+    code = "tts_audio_invalid"
+    default_message = "The generated narration audio is invalid."
+
+
+class NarrationError(ExplainerError):
+    """The composite Phase 6 narration job failed as a whole."""
+
+    status_code = 500
+    code = "narration_failed"
+    default_message = "Narration generation failed."
+
+
+class NarrationNotReadyError(ExplainerError):
+    """Narration generation requires a SCRIPT_READY project."""
+
+    status_code = 409
+    code = "narration_not_ready"
+    default_message = (
+        "This project cannot generate narration yet. Generate the "
+        "explanation script first (status becomes SCRIPT_READY)."
+    )
+
+
+class NarrationConflictError(ExplainerError):
+    """A narration job is already queued or running for the project."""
+
+    status_code = 409
+    code = "narration_already_running"
+    default_message = "Narration generation is already running for this project."
+
+
 class NotInPhase1Error(ExplainerError):
     """Feature is deliberately not implemented yet (scope guard).
 

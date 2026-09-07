@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.health import router as health_router
+from app.api.narration import router as narration_router
 from app.api.projects import router as projects_router
 from app.api.scripts import router as scripts_router
 from app.config import Settings, get_settings
@@ -96,13 +97,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         description=(
-            "Phase 5: a local, zero-cost AI video explainer. Videos stream "
+            "Phase 6: a local, zero-cost AI video explainer. Videos stream "
             "to disk, are validated with FFprobe, preprocessed into analysis "
             "assets, analyzed entirely on-device (scene detection, "
             "speech-to-text, OCR, visual metadata, aligned timeline), then "
             "understood by a small local LLM which writes a duration-aware "
-            "narration script in English/Hindi/Bengali. TTS and final "
-            "rendering arrive in later phases."
+            "narration script in English/Hindi/Bengali. Phase 6 synthesizes "
+            "the narration locally (Piper) segment by segment, measures the "
+            "real audio, and emits synchronized UTF-8 SRT/VTT subtitles. "
+            "Final video mixing/rendering arrives in Phase 7."
         ),
         lifespan=lifespan,
     )
@@ -127,6 +130,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router)
     app.include_router(projects_router)
     app.include_router(scripts_router)
+    app.include_router(narration_router)
     register_exception_handlers(app)
 
     @app.get("/", include_in_schema=False)
@@ -134,7 +138,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "app": settings.app_name,
             "version": settings.app_version,
-            "phase": 5,
+            "phase": 6,
             "api": {
                 "health": "/api/health",
                 "system_status": "/api/system/status",
@@ -153,11 +157,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "duration_plan": "/api/projects/{id}/duration-plan",
                 "script": "/api/projects/{id}/script",
                 "script_quality": "/api/projects/{id}/script-quality",
+                "generate_narration": "/api/projects/{id}/generate-narration",
+                "narration_status": "/api/projects/{id}/narration-status",
+                "narration": "/api/projects/{id}/narration",
+                "narration_audio": "/api/projects/{id}/narration/audio",
+                "narration_subtitles": "/api/projects/{id}/narration/subtitles",
+                "narration_segments": "/api/projects/{id}/narration/segments",
             },
             "docs": "/docs",
         }
 
-    logger.info("Application factory ready (phase 5).")
+    logger.info("Application factory ready (phase 6).")
     return app
 
 

@@ -4,9 +4,13 @@ import type {
   ApiErrorBody,
   CreateProjectPayload,
   DurationPlanDocument,
+  GenerateNarrationResponse,
   GenerateScriptResponse,
   Job,
   Language,
+  NarrationManifestDocument,
+  NarrationRun,
+  NarrationTimelineDocument,
   Project,
   ProjectStatus,
   ScriptDocument,
@@ -166,11 +170,48 @@ export const api = {
     request<ScriptDocument>(`/api/projects/${id}/script`),
   getScriptQuality: (id: string) =>
     request<ScriptQualityDocument>(`/api/projects/${id}/script-quality`),
+  generateNarration: (id: string, payload: { language: Language; voice_id?: string }) =>
+    request<GenerateNarrationResponse>(`/api/projects/${id}/generate-narration`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getNarrationStatus: (id: string) =>
+    request<NarrationRun>(`/api/projects/${id}/narration-status`),
+  getNarrationManifest: (id: string) =>
+    request<NarrationManifestDocument>(`/api/projects/${id}/narration`),
+  getNarrationTimeline: (id: string) =>
+    request<NarrationTimelineDocument>(`/api/projects/${id}/narration/segments`),
+  narrationSubtitlesText: (id: string, format: "srt" | "vtt" = "srt") =>
+    fetch(`${BASE}/api/projects/${id}/narration/subtitles?format=${format}`).then(
+      async (response) => {
+        if (!response.ok) {
+          let detail = `Subtitles unavailable (HTTP ${response.status}).`;
+          try {
+            const body = (await response.json()) as ApiErrorBody;
+            if (body.detail) detail = body.detail;
+          } catch {
+            // Non-JSON error body; keep the generic message.
+          }
+          throw new ApiError(response.status, detail);
+        }
+        return response.text();
+      },
+    ),
 };
 
 /** Browser URL for a project's poster thumbnail (or null pre-PREPARED). */
 export function thumbnailUrl(project: Pick<Project, "id" | "thumbnail_path">): string | null {
   return project.thumbnail_path ? `${BASE}/api/projects/${project.id}/thumbnail` : null;
+}
+
+/** Browser URL of the narration audio (Phase 6). */
+export function narrationAudioUrl(projectId: string): string {
+  return `${BASE}/api/projects/${projectId}/narration/audio`;
+}
+
+/** Browser URL of the subtitles (SRT by default, VTT via format). */
+export function narrationSubtitlesUrl(projectId: string, format: "srt" | "vtt" = "srt"): string {
+  return `${BASE}/api/projects/${projectId}/narration/subtitles?format=${format}`;
 }
 
 /** Browser URL for one scene's representative frame (Phase 4). */
@@ -191,6 +232,8 @@ export function normalizeStatus(value: string): ProjectStatus {
     "analyzed",
     "scripting",
     "script_ready",
+    "narrating",
+    "narration_ready",
     "queued",
     "processing",
     "completed",

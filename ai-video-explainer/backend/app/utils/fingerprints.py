@@ -1,12 +1,17 @@
-"""Deterministic fingerprints (Phase 4 idempotency).
+"""Deterministic fingerprints (Phase 4-6 idempotency).
 
-- ``config_fingerprint``: hashes every analysis-relevant setting, so
-  changing e.g. SCENE_THRESHOLD or WHISPER_MODEL invalidates past results.
+- ``analysis_config_fingerprint``: hashes every analysis-relevant setting,
+  so changing e.g. SCENE_THRESHOLD or WHISPER_MODEL invalidates past results.
 - ``preprocessing_fingerprint``: hashes what the analysis actually consumes
   (the uploaded file's SHA-256 + the analysis copy's recorded specs), so a
   re-uploaded/re-preprocessed video never reuses stale analysis.
+- ``story_generation_fingerprint``: hashes everything that changes Phase 5
+  story/script output (analysis identity + language + duration + model and
+  planner configuration).
+- ``narration_fingerprint``: hashes everything that changes Phase 6 narration
+  output (script identity + language + voice + TTS/audio/subtitle settings).
 
-Both are plain hex strings stored on ``analysis_results`` rows.
+Fingerprints are plain hex strings stored on the run rows.
 """
 
 from __future__ import annotations
@@ -107,9 +112,60 @@ def story_generation_fingerprint(
     return _sha256_json(payload)
 
 
+_TTS_SETTINGS = (
+    "tts_provider",
+    "tts_sample_rate",
+    "tts_channels",
+    "tts_speaker",
+    "tts_length_scale",
+    "tts_gap_ms_within_section",
+    "tts_gap_ms_between_sections",
+    "tts_lead_in_ms",
+    "narration_max_segment_chars",
+    "narration_max_segment_words",
+    "subtitle_max_chars_per_line",
+    "subtitle_max_chars_per_caption",
+    "audio_target_mean_db",
+    "audio_max_gain_db",
+    "audio_peak_ceiling_db",
+    "narration_qc_duration_tolerance_ms",
+)
+
+
+def narration_fingerprint(
+    settings: Any,
+    script_fingerprint: str,
+    *,
+    language: str,
+    voice_id: str | None,
+) -> str:
+    """Hash of everything that changes Phase 6 narration output.
+
+    Combines the Phase 5 script identity (its generation fingerprint),
+    language, the resolved voice model basename and every TTS/subtitle/
+    audio setting. Stored on ``tts_runs`` rows; when it matches a completed
+    run whose artifacts are present, the narration is reused instead of
+    being synthesized again.
+    """
+    payload: dict[str, Any] = {
+        "script_fingerprint": script_fingerprint,
+        "language": language,
+        "voice_id": voice_id,
+        "tts_provider": getattr(settings, "tts_provider", "piper"),
+    }
+    for name in _TTS_SETTINGS:
+        payload[name] = getattr(settings, name)
+    return _sha256_json(payload)
+
+
 def _sha256_json(payload: dict[str, Any]) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-__all__ = ["analysis_config_fingerprint", "preprocessing_fingerprint"]
+__all__ = [
+    "analysis_config_fingerprint",
+    "preprocessing_fingerprint",
+    "story_generation_fingerprint",
+    "narration_fingerprint",
+]

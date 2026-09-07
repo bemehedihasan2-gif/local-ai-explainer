@@ -13,11 +13,12 @@ def test_backend_starts_and_root_responds(settings) -> None:
         assert response.status_code == 200
         body = response.json()
         assert body["app"] == settings.app_name
-        assert body["phase"] == 5
+        assert body["phase"] == 6
         assert "/api/health" in body["api"].values()
         assert "/api/projects/upload" in body["api"].values()
         assert "/api/projects/{id}/preprocess" in body["api"].values()
         assert "/api/projects/{id}/jobs" in body["api"].values()
+        assert "/api/projects/{id}/generate-narration" in body["api"].values()
         assert body["docs"] == "/docs"
 
 
@@ -73,7 +74,7 @@ def test_system_status_reports_capabilities(client: TestClient) -> None:
     assert worker["active_job"] is None
 
     # Phase marker + upload limits + preprocessing settings advertised
-    assert body["phase"] == "5"
+    assert body["phase"] == "6"
     assert body["limits"]["max_upload_size_mb"] > 0
     assert body["limits"]["allowed_video_extensions"]
     assert body["limits"]["upload_chunk_size_bytes"] > 0
@@ -81,3 +82,13 @@ def test_system_status_reports_capabilities(client: TestClient) -> None:
     assert body["preprocess"]["analysis_fps"] == client.app.state.settings.analysis_fps
     assert body["preprocess"]["audio_sample_rate"] == client.app.state.settings.audio_sample_rate
     assert body["preprocess"]["preprocess_timeout_seconds"] > 0
+
+    # Phase 6 TTS report: engine + per-language voice availability.
+    tts = body["tts"]
+    assert tts["provider"] == "piper"
+    assert "available" in tts and "executable_available" in tts
+    assert set(tts["languages"]) == {"en", "hi", "bn"}
+    for language_status in tts["languages"].values():
+        assert set(language_status) >= {"voice_id", "available", "configured", "model_available"}
+    assert isinstance(tts["voices"], list)
+    assert isinstance(tts["settings"]["sample_rate"], int)

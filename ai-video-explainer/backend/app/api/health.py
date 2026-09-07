@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends
 from app.ai.llm import build_llm_provider
 from app.ai.ocr import tesseract_available
 from app.ai.stt import whisper_model_installed, whisper_package_installed
+from app.ai.tts import build_tts_provider
 from app.api.deps import (
     get_database,
     get_ffmpeg_service,
@@ -46,6 +47,30 @@ def _llm_report(settings: Settings) -> dict[str, object]:
         "setup_hint": detail.get("setup_hint"),
         "note": (
             "llama.cpp CLI + a small quantized GGUF (e.g. 1-3B Q4). Models "
+            "are downloaded only by explicit user action - never silently."
+        ),
+    }
+
+
+def _tts_report(settings: Settings) -> dict[str, object]:
+    """Public capability report for the local TTS engine. Voice file paths
+    are never exposed - only basenames via ``voice_id``."""
+    provider = build_tts_provider(settings)
+    detail = provider.describe()
+    return {
+        "provider": detail.get("provider"),
+        "available": bool(detail.get("available")),
+        "executable_available": bool(detail.get("executable_available", False)),
+        "languages": detail.get("languages") or {},
+        "voices": detail.get("voices") or [],
+        "setup_hint": detail.get("setup_hint"),
+        "settings": {
+            "sample_rate": settings.tts_sample_rate,
+            "channels": settings.tts_channels,
+            "timeout_seconds": settings.tts_timeout_seconds,
+        },
+        "note": (
+            "Piper CLI + per-language .onnx voice models (en/hi/bn). Voices "
             "are downloaded only by explicit user action - never silently."
         ),
     }
@@ -102,8 +127,14 @@ def system_status(
             status = "degraded"
             notes.append("database")
         if not ff.available:
-            # ffmpeg absence alone is "degraded" (needed only Phase 2+)
+            # ffmpeg absence alone is "degraded" (needed only Phase 2-4/7)
             notes.append("ffmpeg")
+            if status == "ok":
+                status = "degraded"
+
+        tts = _tts_report(settings)
+        if not tts["available"]:
+            notes.append("tts")
             if status == "ok":
                 status = "degraded"
 
@@ -187,13 +218,14 @@ def system_status(
                 },
             },
             "llm": _llm_report(settings),
-            "phase": "5",
+            "tts": tts,
+            "phase": "6",
             "message": (
-                "Phase 5 local story + script: ANALYZED videos become "
-                "SCRIPT_READY with a story model, important-scene selection, "
-                "a duration-aware narration plan and an original script in "
-                "English/Hindi/Bengali, written by a small local LLM "
-                "(llama.cpp + a quantized GGUF). No cloud APIs; missing "
-                "models are reported with explicit setup instructions."
+                "Phase 6 local narration: SCRIPT_READY videos get a "
+                "measured segment-by-segment Piper voice track, a narration "
+                "timeline, synchronized UTF-8 SRT/VTT subtitles and a "
+                "deterministic audio QC report (NARRATION_READY). No cloud "
+                "APIs; missing engines/voices are reported with explicit "
+                "setup instructions."
             ),
         }

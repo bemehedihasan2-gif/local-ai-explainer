@@ -182,8 +182,12 @@ def generate_script(
             raise LLMUnavailableError(hint)
 
         # Persist before submitting: the worker only transitions
-        # already-persisted states.
+        # already-persisted states. Old narration (Phase 6) belongs to the
+        # script being replaced, so its audio/subtitle files are cleared too.
         StoryService(settings, storage).cleanup_artifacts(project_id)
+        from app.services.narration import NarrationService
+
+        NarrationService(settings, storage).cleanup_artifacts(project_id)
         run = ScriptRepository(db).create(
             project_id=project_id,
             language=language_code,

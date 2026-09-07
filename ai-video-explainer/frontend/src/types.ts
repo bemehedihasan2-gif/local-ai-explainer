@@ -36,6 +36,8 @@ export type ProjectStatus =
   | "analyzed"
   | "scripting"
   | "script_ready"
+  | "narrating"
+  | "narration_ready"
   | "queued"
   | "processing"
   | "completed"
@@ -152,6 +154,100 @@ export interface GenerateScriptResponse {
   job?: Job;
   script_run?: ScriptRun;
   message?: string;
+}
+
+// Phase 6: one narration (TTS) run per project - summary only. The audio
+// itself is streamed from the dedicated /narration/audio endpoint.
+export interface NarrationRun {
+  id: string;
+  project_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  current_stage: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  language: Language;
+  voice_id: string | null;
+  provider: string | null;
+  audio_path: string | null;
+  subtitle_path: string | null;
+  duration_ms: number | null;
+  segment_count: number | null;
+  quality_score: number | null;
+  error_message: string | null;
+  warnings: string[];
+}
+
+export interface GenerateNarrationResponse {
+  idempotent: boolean;
+  status: string;
+  tts_run_id?: string;
+  job?: Job;
+  tts_run?: NarrationRun;
+  message?: string;
+}
+
+export interface NarrationTimelineDocument {
+  schema_version: number;
+  sample_rate: number;
+  channels: number;
+  gap_ms: { within_section: number; between_sections: number; lead_in: number };
+  total_duration_ms: number;
+  segments: {
+    segment_id: number;
+    sequence: number;
+    text: string;
+    scene_ids: number[];
+    section: string;
+    section_index: number;
+    start_ms: number;
+    end_ms: number;
+    duration_ms: number;
+    audio_path: string;
+  }[];
+}
+
+export interface NarrationManifestDocument {
+  schema_version: number;
+  generated_at: string;
+  source: { sha256: string | null; original_filename: string | null };
+  generation: {
+    language: Language;
+    voice: string | null;
+    voice_id: string | null;
+    provider: string;
+    sample_rate: number;
+    channels: number;
+    segment_count: number;
+    duration_ms: number;
+    normalization: {
+      applied_gain_db: number;
+      before: { peak_db: number; mean_db: number; clip_ratio: number };
+      after: { peak_db: number; mean_db: number; clip_ratio: number };
+    };
+    gap_ms: { within_section: number; between_sections: number; lead_in: number };
+  };
+  results: {
+    quality_score: number;
+    scores: {
+      audio_score: number;
+      timeline_score: number;
+      subtitle_score: number;
+      mapping_score: number;
+      duration_consistency_score: number;
+    };
+    processing_seconds: number;
+    assets: {
+      segments_dir: string;
+      segments: string;
+      timeline: string;
+      audio: string;
+      quality: string;
+      subtitles_srt: string;
+      subtitles_vtt: string;
+      manifest: string;
+    };
+  };
+  warnings: string[];
 }
 
 export interface StoryDocument {
@@ -406,6 +502,33 @@ export interface SystemStatus {
     max_tokens: number | null;
     temperature: number | null;
     setup_hint: string | null;
+    note: string;
+  };
+  tts: {
+    provider: string;
+    available: boolean;
+    executable_available: boolean;
+    languages: Record<
+      Language,
+      {
+        voice_id: string | null;
+        available: boolean;
+        configured: boolean;
+        model_available: boolean;
+        sample_rate: number | null;
+        note: string | null;
+      }
+    >;
+    voices: {
+      id: string;
+      language: Language;
+      voice_id: string;
+      available: boolean;
+      sample_rate: number | null;
+      note: string | null;
+    }[];
+    setup_hint: string | null;
+    settings: { sample_rate: number; channels: number; timeout_seconds: number };
     note: string;
   };
   phase: string;

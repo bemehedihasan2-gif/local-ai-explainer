@@ -120,6 +120,35 @@ CREATE INDEX IF NOT EXISTS idx_script_runs_project_id
     ON script_runs (project_id);
 CREATE INDEX IF NOT EXISTS idx_script_runs_project_status
     ON script_runs (project_id, status);
+
+CREATE TABLE IF NOT EXISTS tts_runs (
+    id                       TEXT PRIMARY KEY,
+    project_id               TEXT NOT NULL
+                             REFERENCES projects (id) ON DELETE CASCADE,
+    status                   TEXT NOT NULL DEFAULT 'queued',
+    current_stage            TEXT,
+    started_at               TEXT,
+    completed_at             TEXT,
+    language                 TEXT,
+    voice_id                 TEXT,
+    provider                 TEXT,
+    script_fingerprint       TEXT,
+    generation_fingerprint   TEXT,
+    audio_path               TEXT,
+    subtitle_path            TEXT,
+    duration_ms              INTEGER,
+    segment_count            INTEGER,
+    quality_score            INTEGER,
+    error_message            TEXT,
+    warnings                 TEXT,
+    created_at               TEXT NOT NULL,
+    updated_at               TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tts_runs_project_id
+    ON tts_runs (project_id);
+CREATE INDEX IF NOT EXISTS idx_tts_runs_project_status
+    ON tts_runs (project_id, status);
 """
 
 #: Columns added after the initial Phase 1 release, applied by

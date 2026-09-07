@@ -9,6 +9,8 @@ import {
   analysisFrameUrl,
   api,
   ApiError,
+  narrationAudioUrl,
+  narrationSubtitlesUrl,
   thumbnailUrl,
   uploadVideo,
 } from "./api";
@@ -20,6 +22,9 @@ import {
   type DurationMinutes,
   type DurationPlanDocument,
   type Language,
+  type NarrationManifestDocument,
+  type NarrationRun,
+  type NarrationTimelineDocument,
   type Project,
   type ScriptDocument,
   type ScriptQualityDocument,
@@ -51,6 +56,8 @@ const STATUS_LABEL: Record<string, string> = {
   analyzed: "Analyzed",
   scripting: "Generating script",
   script_ready: "Script ready",
+  narrating: "Generating narration",
+  narration_ready: "Narration ready",
   queued: "Queued",
   processing: "Processing",
   completed: "Completed",
@@ -114,11 +121,11 @@ const PIPELINE: { name: string; phase: string; done?: boolean }[] = [
   { name: "Story Understanding", phase: "Phase 5", done: true },
   { name: "Duration Selection", phase: "Phase 5", done: true },
   { name: "Script Generation", phase: "Phase 5", done: true },
-  { name: "TTS Narration", phase: "Phase 6" },
-  { name: "Subtitle Generation", phase: "Phase 6" },
-  { name: "Audio Mixing", phase: "Phase 6" },
-  { name: "FFmpeg Rendering", phase: "Phase 6" },
-  { name: "Quality Control", phase: "Phase 6" },
+  { name: "TTS Narration", phase: "Phase 6", done: true },
+  { name: "Subtitle Generation", phase: "Phase 6", done: true },
+  { name: "Audio Mixing", phase: "Phase 7" },
+  { name: "FFmpeg Rendering", phase: "Phase 7" },
+  { name: "Quality Control", phase: "Phase 7" },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -152,6 +159,12 @@ export default function App() {
   const [scriptQuality, setScriptQuality] = useState<ScriptQualityDocument | null>(null);
   const [scriptLanguage, setScriptLanguage] = useState<Language>("en");
   const [scriptDuration, setScriptDuration] = useState<DurationMinutes>(3);
+  const [narrationRun, setNarrationRun] = useState<NarrationRun | null>(null);
+  const [narrationManifest, setNarrationManifest] =
+    useState<NarrationManifestDocument | null>(null);
+  const [narrationTimeline, setNarrationTimeline] =
+    useState<NarrationTimelineDocument | null>(null);
+  const [narrationSrt, setNarrationSrt] = useState<string | null>(null);
 
   const [busyDelete, setBusyDelete] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -290,6 +303,38 @@ export default function App() {
     }
   };
 
+  /* ---- Phase 6 narration generation ------------------------------- */
+
+  const [narrationBusy, setNarrationBusy] = useState(false);
+
+  const startNarration = async (project: Project) => {
+    setNarrationBusy(true);
+    setNotice(null);
+    try {
+      const response = await api.generateNarration(project.id, {
+        language: scriptLanguage,
+      });
+      if (response.idempotent) {
+        setNotice({
+          kind: "info",
+          title: "Narration already ready",
+          body: response.message ?? "Existing narration is still valid; nothing was re-synthesized.",
+        });
+      }
+      setView(await api.getProject(project.id)); // -> narrating
+      setProjects(await api.listProjects());
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : String(err);
+      setNotice({
+        kind: "error",
+        title: "Could not start narration",
+        body: message,
+      });
+    } finally {
+      setNarrationBusy(false);
+    }
+  };
+
   /* ---- Phase 5 story + script generation -------------------------- */
 
   const [scriptBusy, setScriptBusy] = useState(false);
@@ -376,20 +421,22 @@ export default function App() {
     }
   };
 
-  // While any project is being preprocessed/analyzed/scripted, poll project
-  // + history so the progress bar and status tags stay honest (1 s cadence).
+  // While any project is being preprocessed/analyzed/scripted/narrated, poll
+  // project + history so the progress bar and status tags stay honest.
   const anyProcessing = projects.some(
     (p) =>
       p.status === "preprocessing" ||
       p.status === "analyzing" ||
-      p.status === "scripting",
+      p.status === "scripting" ||
+      p.status === "narrating",
   );
   useEffect(() => {
     const activeView =
       view &&
       (view.status === "preprocessing" ||
         view.status === "analyzing" ||
-        view.status === "scripting");
+        view.status === "scripting" ||
+        view.status === "narrating");
     if (!anyProcessing && !activeView) return;
     const timer = window.setInterval(() => {
       void (async () => {
@@ -414,6 +461,15 @@ export default function App() {
                 // run row may not be visible yet; next tick retries
               }
             }
+            if (fresh.status === "narrating") {
+              // Live stage label (segmenting, generating voice, measuring,
+              // assembling, QC, ...).
+              try {
+                setNarrationRun(await api.getNarrationStatus(fresh.id));
+              } catch {
+                // run row may not be visible yet; next tick retries
+              }
+            }
           }
           setProjects(await api.listProjects());
         } catch {
@@ -424,9 +480,13 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [anyProcessing, view]);
 
-  // When a project reaches ANALYZED or SCRIPT_READY, load its results once.
+  // When a project reaches ANALYZED / SCRIPT_READY / NARRATION_READY, load
+  // its results once.
   const analyzedId =
-    view && (view.status === "analyzed" || view.status === "script_ready")
+    view &&
+    (view.status === "analyzed" ||
+      view.status === "script_ready" ||
+      view.status === "narration_ready")
       ? view.id
       : null;
   useEffect(() => {
@@ -452,7 +512,11 @@ export default function App() {
       } catch {
         // Assets may be missing (deleted project); leave the panel empty.
       }
-      if (view?.status !== "script_ready") return;
+      if (
+        view?.status !== "script_ready" &&
+        view?.status !== "narration_ready"
+      )
+        return;
       try {
         const [run2, storyDoc, selected, plan, scriptDoc, quality] =
           await Promise.all([
@@ -486,6 +550,45 @@ export default function App() {
       cancelled = true;
     };
   }, [analyzedId, view?.status]);
+
+  // When a project reaches NARRATION_READY, load its audio/subtitle assets.
+  const narrationReadyId =
+    view && view.status === "narration_ready" ? view.id : null;
+  useEffect(() => {
+    if (!narrationReadyId) {
+      setNarrationRun(null);
+      setNarrationManifest(null);
+      setNarrationTimeline(null);
+      setNarrationSrt(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [run, manifest, timeline] = await Promise.all([
+          api.getNarrationStatus(narrationReadyId),
+          api.getNarrationManifest(narrationReadyId),
+          api.getNarrationTimeline(narrationReadyId),
+        ]);
+        if (cancelled) return;
+        setNarrationRun(run);
+        setNarrationManifest(manifest);
+        setNarrationTimeline(timeline);
+        try {
+          setNarrationSrt(
+            await api.narrationSubtitlesText(narrationReadyId, "srt"),
+          );
+        } catch {
+          setNarrationSrt(null); // subtitles text is optional for preview
+        }
+      } catch {
+        // Narration assets may be missing (deleted/replaced); leave empty.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [narrationReadyId]);
 
   /* ---- history ---------------------------------------------------- */
 

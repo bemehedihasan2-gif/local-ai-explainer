@@ -47,7 +47,7 @@ class Settings(BaseSettings):
 
     # Application -------------------------------------------------------
     app_name: str = "Local AI Video Explainer"
-    app_version: str = "0.5.0"
+    app_version: str = "0.6.0"
     environment: str = "development"
 
     # Servers -----------------------------------------------------------
@@ -179,6 +179,62 @@ class Settings(BaseSettings):
     max_words_per_scene: int = 110
     min_scenes_per_script: int = 3
     max_selected_scenes: int = 24
+
+    # Phase 6 - local text-to-speech (narration audio) --------------------
+    # Provider abstraction: the app shells out to a Piper CLI for every
+    # segment (no Python binding, no resident model). "none" disables the
+    # stage explicitly; the pipeline then refuses with a clear message.
+    tts_provider: str = "piper"  # "piper" | "none"
+    #: Path to the Piper CLI binary (``piper``). None -> PATH lookup.
+    tts_executable_path: Path | None = None
+    #: Per-language Piper voice model (.onnx; a sibling .onnx.json config is
+    #: picked up automatically). None -> that language is "not configured"
+    #: and narration in it is refused with setup instructions.
+    tts_voice_en: Path | None = None
+    tts_voice_hi: Path | None = None
+    tts_voice_bn: Path | None = None
+    #: Expected narration sample rate (Hz). Piper voices usually run at
+    #: 22050; when a voice reports a different rate the actual rate wins and
+    #: a QC warning is recorded instead of silently resampling.
+    tts_sample_rate: int = 22050
+    #: Expected narration channel count (Piper always emits mono).
+    tts_channels: int = 1
+    #: Upper bound for ONE segment synthesis (a very long sentence).
+    tts_timeout_seconds: int = 180
+    #: Optional speaker id for multi-speaker Piper voices (None = default).
+    tts_speaker: int | None = None
+    #: Piper ``--length_scale`` (1.0 = natural pace; >1 slower).
+    tts_length_scale: float = 1.0
+
+    # Narration timing (ms) - gaps between synthesized segments. Segments
+    # inside one script section pause briefly; between sections a little
+    # more; the whole narration starts with a short lead-in.
+    tts_gap_ms_within_section: int = 140
+    tts_gap_ms_between_sections: int = 400
+    tts_lead_in_ms: int = 300
+
+    # Segmentation of the Phase 5 script into narration units (sentences
+    # grouped to a bounded size so each TTS call + subtitle stays readable).
+    narration_max_segment_chars: int = 140
+    narration_max_segment_words: int = 18
+
+    # Subtitle caption limits (approx. 1-2 lines per caption).
+    subtitle_max_chars_per_line: int = 42
+    subtitle_max_chars_per_caption: int = 84
+
+    # Safe narration loudness normalization (dBFS). Mean volume is lifted
+    # toward the target but never more than max_gain_db, and the resulting
+    # peak is capped at peak_ceiling_db so speech dynamics survive.
+    audio_target_mean_db: float = -20.0
+    audio_max_gain_db: float = 12.0
+    audio_peak_ceiling_db: float = -1.5
+    audio_qc_silence_threshold_db: float = -60.0
+
+    # Narration QC: allowed mismatch between the assembled WAV duration and
+    # the narration timeline (ms) - tiny writer rounding is normal.
+    narration_qc_duration_tolerance_ms: int = 400
+
+    # Storage (relative -> resolved against base_dir by the validator) ---
 
     # Storage (relative -> resolved against base_dir by the validator) ---
     base_dir: Path = PROJECT_ROOT
@@ -388,6 +444,80 @@ class Settings(BaseSettings):
         if value < 1:
             raise ValueError("story_batch_scenes must be >= 1")
         return value
+
+    @field_validator("tts_provider")
+    @classmethod
+    def _tts_provider_allowed(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value not in {"piper", "none"}:
+            raise ValueError("tts_provider must be 'piper' or 'none'")
+        return value
+
+    @field_validator("tts_sample_rate")
+    @classmethod
+    def _tts_sample_rate_positive(cls, value: int) -> int:
+        if value < 8000:
+            raise ValueError("tts_sample_rate must be >= 8000")
+        return value
+
+    @field_validator("tts_channels")
+    @classmethod
+    def _tts_channels_allowed(cls, value: int) -> int:
+        if value not in (1, 2):
+            raise ValueError("tts_channels must be 1 (mono) or 2 (stereo)")
+        return value
+
+    @field_validator("tts_timeout_seconds")
+    @classmethod
+    def _tts_timeout_positive(cls, value: int) -> int:
+        if value < 10:
+            raise ValueError("tts_timeout_seconds must be >= 10")
+        return value
+
+    @field_validator("tts_length_scale")
+    @classmethod
+    def _tts_length_scale_range(cls, value: float) -> float:
+        if not 0.5 <= value <= 2.0:
+            raise ValueError("tts_length_scale must be in [0.5, 2]")
+        return value
+
+    @field_validator("narration_max_segment_chars")
+    @classmethod
+    def _narration_segment_chars(cls, value: int) -> int:
+        if not 40 <= value <= 400:
+            raise ValueError("narration_max_segment_chars must be in [40, 400]")
+        return value
+
+    @field_validator("narration_max_segment_words")
+    @classmethod
+    def _narration_segment_words(cls, value: int) -> int:
+        if not 4 <= value <= 40:
+            raise ValueError("narration_max_segment_words must be in [4, 40]")
+        return value
+
+    @field_validator("subtitle_max_chars_per_caption")
+    @classmethod
+    def _subtitle_caption_limit(cls, value: int) -> int:
+        if not 20 <= value <= 200:
+            raise ValueError("subtitle_max_chars_per_caption must be in [20, 200]")
+        return value
+
+    @field_validator("subtitle_max_chars_per_line")
+    @classmethod
+    def _subtitle_line_limit(cls, value: int) -> int:
+        if not 10 <= value <= 100:
+            raise ValueError("subtitle_max_chars_per_line must be in [10, 100]")
+        return value
+
+    @model_validator(mode="after")
+    def _subtitle_limits_consistent(self) -> "Settings":
+        if self.subtitle_max_chars_per_caption < self.subtitle_max_chars_per_line:
+            raise ValueError(
+                "subtitle_max_chars_per_caption must be >= subtitle_max_chars_per_line"
+            )
+        if self.tts_gap_ms_within_section < 0 or self.tts_gap_ms_between_sections < 0:
+            raise ValueError("TTS gap settings must be >= 0 ms")
+        return self
 
     @field_validator("story_max_excerpt_chars")
     @classmethod

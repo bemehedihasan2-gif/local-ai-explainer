@@ -42,7 +42,9 @@ class ProjectStatus(str, Enum):
     ANALYZED = "analyzed"  # scenes/transcript/ocr/visual/timeline stored (Phase 4 done)
     SCRIPTING = "scripting"  # Phase 5 worker is building story + script
     SCRIPT_READY = "script_ready"  # story/selection/plan/script/QC stored (Phase 5 done)
-    QUEUED = "queued"  # future pipeline stages (Phase 6+)
+    NARRATING = "narrating"  # Phase 6 worker is synthesizing narration audio
+    NARRATION_READY = "narration_ready"  # narration.wav + SRT + manifest stored (Phase 6 done)
+    QUEUED = "queued"  # future pipeline stages (Phase 7+)
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
