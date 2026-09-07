@@ -13,6 +13,7 @@ from app.config import Settings
 from app.database.connection import Database
 from app.services.ffmpeg import FfmpegService
 from app.services.storage import StorageService
+from app.services.worker import ProcessingWorker
 
 
 def get_settings(request: Request) -> Settings:
@@ -29,3 +30,7 @@ def get_ffmpeg_service(request: Request) -> FfmpegService:
 
 def get_storage_service(request: Request) -> StorageService:
     return request.app.state.storage
+
+
+def get_worker(request: Request) -> ProcessingWorker:
+    return request.app.state.worker

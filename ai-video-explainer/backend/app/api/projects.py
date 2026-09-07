@@ -3,7 +3,11 @@
 Phase 1 scope: create/list/get/delete *records*.
 Phase 2 scope: ``POST /api/projects/upload`` streams a video into project
 storage, validates it with FFprobe, and returns the READY project with
-metadata. Public responses never contain internal filesystem paths.
+metadata.
+Phase 3 scope: ``POST /api/projects/{id}/preprocess`` queues the background
+worker to build analysis assets (analysis copy, poster thumbnail, 16 kHz
+WAV); ``GET .../jobs`` lists job history; ``GET .../thumbnail`` serves the
+poster. Public responses never contain internal filesystem paths.
 """
 
 from __future__ import annotations
@@ -11,22 +15,32 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
+from fastapi.responses import FileResponse
 
 from app.api.deps import (
     get_database,
     get_ffmpeg_service,
     get_settings,
     get_storage_service,
+    get_worker,
 )
 from app.config import Settings
 from app.database.connection import Database
+from app.database.repositories.jobs import JobRepository
 from app.database.repositories.projects import ProjectRepository
-from app.models.enums import Language
-from app.models.project import ProjectCreate, ProjectOut
+from app.models.enums import Language, PipelineStage, ProjectStatus
+from app.models.project import JobOut, ProjectCreate, ProjectOut
 from app.services.ffmpeg import FfmpegService
 from app.services.storage import StorageService
 from app.services.uploads import UploadService
-from app.utils.errors import ExplainerError, InvalidParameterError
+from app.services.worker import ProcessingWorker
+from app.utils.errors import (
+    AssetNotFoundError,
+    ExplainerError,
+    InvalidParameterError,
+    JobConflictError,
+    ProjectNotReadyError,
+)
 from app.utils.logging import get_logger, log_context
 from app.utils.paths import sanitize_filename
 
@@ -151,3 +165,95 @@ def delete_project(
             )
         ProjectRepository(db).delete(project_id)
         return Response(status_code=204)
+
+
+# ----------------------------------------------------------------------
+# Phase 3: preprocessing (analysis assets) via the background worker
+# ----------------------------------------------------------------------
+
+
+@router.post(
+    "/api/projects/{project_id}/preprocess",
+    response_model=JobOut,
+    status_code=201,
+)
+def start_preprocess(
+    project_id: str,
+    db: Database = Depends(get_database),
+    worker: ProcessingWorker = Depends(get_worker),
+) -> JobOut:
+    """Queue the analysis-asset job for a READY project (409 otherwise).
+
+    The job row is persisted *before* it is handed to the worker; the worker
+    only transitions already-persisted states.
+    """
+    with log_context(project_id=project_id):
+        projects = ProjectRepository(db)
+        row = projects.get(project_id)  # 404 when unknown
+        jobs = JobRepository(db)
+        if jobs.has_active_job(project_id):
+            raise JobConflictError(
+                "A preprocessing job is already queued or running for this "
+                "project. Wait for it to finish before starting another."
+            )
+        if row["status"] != ProjectStatus.READY.value:
+            raise ProjectNotReadyError(
+                "This project cannot be preprocessed: its status is "
+                f"'{row['status']}'. Only validated, READY projects can be "
+                "prepared for analysis."
+            )
+        job = jobs.create(
+            project_id=project_id, stage=PipelineStage.PREPROCESS.value
+        )
+        projects.update(
+            project_id,
+            status=ProjectStatus.PREPROCESSING,
+            progress=0.0,
+            error_message=None,
+        )
+        worker.submit(job["id"])
+        logger.info(
+            "Preprocess job %s queued for project %s",
+            job["id"], project_id,
+            extra={"job_id": job["id"]},
+        )
+        return JobOut.model_validate(job)
+
+
+@router.get(
+    "/api/projects/{project_id}/jobs", response_model=list[JobOut]
+)
+def list_jobs(
+    project_id: str,
+    db: Database = Depends(get_database),
+) -> list[JobOut]:
+    """Processing-job history for a project (oldest first)."""
+    with log_context(project_id=project_id):
+        ProjectRepository(db).get(project_id)  # 404 when unknown
+        jobs = JobRepository(db).list_for_project(project_id)
+        return [JobOut.model_validate(job) for job in jobs]
+
+
+@router.get("/api/projects/{project_id}/thumbnail")
+def project_thumbnail(
+    project_id: str,
+    db: Database = Depends(get_database),
+    storage: StorageService = Depends(get_storage_service),
+) -> FileResponse:
+    """Serve the poster JPEG for a PREPARED project (path-safe)."""
+    with log_context(project_id=project_id):
+        row = ProjectRepository(db).get(project_id)  # 404 when unknown
+        rel = row.get("thumbnail_path")
+        if not rel:
+            raise AssetNotFoundError(
+                "No thumbnail exists yet - preprocessing has not finished "
+                "for this project."
+            )
+        # safe_join refuses any path escaping the project folder.
+        path = storage.project_path(project_id, *rel.split("/"))
+        if not path.is_file():
+            raise AssetNotFoundError(
+                "The thumbnail file is missing on disk. Re-run preprocessing "
+                "to regenerate it."
+            )
+        return FileResponse(path, media_type="image/jpeg")

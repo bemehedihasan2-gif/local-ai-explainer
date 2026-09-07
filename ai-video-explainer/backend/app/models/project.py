@@ -79,6 +79,15 @@ class ProjectOut(BaseModel):
     bitrate: int | None
     has_video: bool | None
     has_audio: bool | None
+    # Phase 3 analysis assets (relative paths inside the project folder -
+    # absolute server paths are never exposed).
+    analysis_path: str | None
+    analysis_width: int | None
+    analysis_height: int | None
+    analysis_fps: float | None
+    thumbnail_path: str | None
+    audio_path: str | None
+    prepared_at: str | None
     language: Language
     target_duration_seconds: int
     status: ProjectStatus

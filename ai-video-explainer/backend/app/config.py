@@ -47,7 +47,7 @@ class Settings(BaseSettings):
 
     # Application -------------------------------------------------------
     app_name: str = "Local AI Video Explainer"
-    app_version: str = "0.2.0"
+    app_version: str = "0.3.0"
     environment: str = "development"
 
     # Servers -----------------------------------------------------------
@@ -76,6 +76,27 @@ class Settings(BaseSettings):
     ffprobe_path: Path | None = None
     #: Upper bound for a single ffprobe invocation on a large/corrupt file.
     ffprobe_timeout_seconds: int = 60
+
+    # Phase 3 - preprocessing / analysis assets ---------------------------
+    #: Width cap of the analysis copy. Height follows aspect ratio (even
+    #: pixels). Kept modest: later vision/OCR stages run on this copy, and
+    #: the target machine is CPU-only with 8 GB RAM.
+    analysis_width: int = 640
+    #: Constant frame rate of the analysis copy. The fps filter duplicates
+    #: frames when the source is slower, so the output is exactly this rate.
+    analysis_fps: int = 5
+    #: Analysis video encoder: ultrafast/veryfast keep 8 GB machines usable.
+    analysis_encoder_preset: str = "veryfast"
+    analysis_crf: int = 30
+    #: Width cap of the poster JPEG thumbnail (aspect ratio preserved).
+    thumbnail_width: int = 320
+    #: Audio extraction settings for later speech-to-text (16 kHz mono WAV
+    #: is the universal local-STT input; pcm_s16le keeps decoding trivial).
+    audio_sample_rate: int = 16000
+    audio_channels: int = 1
+    #: Upper bound for one ffmpeg preprocessing step (analysis copy,
+    #: thumbnail or audio extraction) on a large video.
+    preprocess_timeout_seconds: int = 600
 
     # Storage (relative -> resolved against base_dir by the validator) ---
     base_dir: Path = PROJECT_ROOT
@@ -131,6 +152,34 @@ class Settings(BaseSettings):
     def _ffprobe_timeout_positive(cls, value: int) -> int:
         if value < 1:
             raise ValueError("ffprobe_timeout_seconds must be >= 1")
+        return value
+
+    @field_validator("preprocess_timeout_seconds")
+    @classmethod
+    def _preprocess_timeout_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("preprocess_timeout_seconds must be >= 1")
+        return value
+
+    @field_validator("analysis_width")
+    @classmethod
+    def _analysis_width_positive(cls, value: int) -> int:
+        if value < 16:
+            raise ValueError("analysis_width must be at least 16 px")
+        return value
+
+    @field_validator("analysis_fps")
+    @classmethod
+    def _analysis_fps_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("analysis_fps must be >= 1")
+        return value
+
+    @field_validator("audio_sample_rate")
+    @classmethod
+    def _audio_rate_positive(cls, value: int) -> int:
+        if value < 8000:
+            raise ValueError("audio_sample_rate must be >= 8000")
         return value
 
     @field_validator("allowed_video_extensions")

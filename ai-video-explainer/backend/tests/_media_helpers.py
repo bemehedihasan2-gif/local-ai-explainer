@@ -70,11 +70,65 @@ def probe_payload(
     )
 
 
+def _fake_ffmpeg_source(preprocess_mode: str = "ok") -> str:
+    """Source for the fake ffmpeg executable.
+
+    ``preprocess_mode`` controls behavior when ``-progress`` is present
+    (Phase 3 preprocessing invocations):
+      - "ok": emits duration-shaped ``out_time_us`` progress lines, writes
+        a non-empty file at the final argv entry (the output path) and
+        exits 0.
+      - "slow": like "ok", but sleeps between progress lines so tests can
+        observe intermediate job/project states.
+      - "fail": prints an ffmpeg-style error to stderr and exits 1.
+    """
+    if preprocess_mode == "fail":
+        behavior = (
+            "    print('fake ffmpeg error: Invalid data found when processing input', "
+            "file=sys.stderr)\n"
+            "    sys.exit(1)\n"
+        )
+    elif preprocess_mode == "slow":
+        behavior = (
+            "    import time\n"
+            "    time.sleep(0.2)\n"
+            "    print('out_time_us=0')\n"
+            "    time.sleep(0.2)\n"
+            "    print('out_time_us=6000000')\n"
+            "    time.sleep(0.2)\n"
+            "    print('out_time_us=12500000')\n"
+            "    print('progress=end')\n"
+            "    with open(sys.argv[-1], 'wb') as out:\n"
+            "        out.write(b'fake-asset')\n"
+            "    sys.exit(0)\n"
+        )
+    else:
+        behavior = (
+            "    for i in range(1, 26):\n"
+            "        print(f'out_time_us={i * 500000}')\n"
+            "    print('progress=end')\n"
+            "    with open(sys.argv[-1], 'wb') as out:\n"
+            "        out.write(b'fake-asset')\n"
+            "    sys.exit(0)\n"
+        )
+    return (
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "if '-version' in sys.argv:\n"
+        "    print('ffmpeg version 7.1.1-fake Copyright (c) 2000-2024 the FFmpeg developers')\n"
+        "    sys.exit(0)\n"
+        "if '-progress' in sys.argv:\n"
+        + behavior
+        + "print('fake ffmpeg: no transcoding in tests')\n"
+    )
+
+
 def install_fake_media_tools(
     tmp_path: Path,
     *,
     probe_body: str | None = None,
     probe_mode: str = "ok",
+    preprocess_mode: str = "ok",
 ) -> tuple[str, str]:
     """Create fake ``ffmpeg`` + ``ffprobe`` executables under ``tmp_path``.
 
@@ -82,15 +136,12 @@ def install_fake_media_tools(
       - "ok": prints ``probe_body`` (or a default video+audio document)
       - "exit_error": exits non-zero with an ffprobe-style error (corrupt file)
       - "empty_streams": valid JSON but no streams at all
+
+    ``preprocess_mode`` (see :func:`_fake_ffmpeg_source`): "ok" | "slow" |
+    "fail" - controls the fake ffmpeg's ``-progress`` behavior used by the
+    Phase 3 preprocessing service.
     """
-    ffmpeg_src = (
-        f"#!{sys.executable}\n"
-        "import sys\n"
-        "if '-version' in sys.argv:\n"
-        "    print('ffmpeg version 7.1.1-fake Copyright (c) 2000-2024 the FFmpeg developers')\n"
-        "    sys.exit(0)\n"
-        "print('fake ffmpeg: no transcoding in tests')\n"
-    )
+    ffmpeg_src = _fake_ffmpeg_source(preprocess_mode)
 
     # Every mode answers ``-version`` first so binary detection succeeds;
     # the behavior after that differs per probe_mode.
@@ -174,3 +225,9 @@ def where_ffmpeg() -> str | None:
     import shutil
 
     return shutil.which("ffmpeg")
+
+
+def where_ffprobe() -> str | None:
+    import shutil
+
+    return shutil.which("ffprobe")

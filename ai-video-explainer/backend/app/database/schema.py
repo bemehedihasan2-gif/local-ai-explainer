@@ -79,6 +79,17 @@ _PHASE2_COLUMNS: dict[str, str] = {
     "has_audio": "INTEGER NOT NULL DEFAULT 0",
 }
 
+#: Phase 3 analysis-asset columns (relative paths, never absolute).
+_PHASE3_COLUMNS: dict[str, str] = {
+    "analysis_path": "TEXT",       # relative: "analysis/analysis.mp4"
+    "analysis_width": "INTEGER",
+    "analysis_height": "INTEGER",
+    "analysis_fps": "REAL",
+    "thumbnail_path": "TEXT",      # relative: "thumbnails/poster.jpg"
+    "audio_path": "TEXT",          # relative: "audio/audio.wav" (or NULL)
+    "prepared_at": "TEXT",
+}
+
 
 def migrate_schema(conn: sqlite3.Connection) -> None:
     """Add any columns introduced after the table was first created.
@@ -95,7 +106,11 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
         if column in existing:
             continue
         conn.execute(f"ALTER TABLE projects ADD COLUMN {column} {definition}")
-    # Column exists on fresh databases and after the ALTERs above.
+    for column, definition in _PHASE3_COLUMNS.items():
+        if column in existing:
+            continue
+        conn.execute(f"ALTER TABLE projects ADD COLUMN {column} {definition}")
+    # Columns exist on fresh databases and after the ALTERs above.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_projects_sha256 ON projects (sha256)"
     )

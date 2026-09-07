@@ -1,6 +1,7 @@
 """Speech-to-text (transcribe speech to text with timestamps).
 
-Phase 1: interface only.
+Interface only (Phase 4 planned). Phase 3's preprocessing already produces
+``audio/audio.wav`` (16 kHz mono PCM) precisely as this stage's input.
 
 Planned local provider (free/offline): faster-whisper with the ``small``
 model quantized to int8, CPU-only, ~1-2 GB RAM - a reasonable fit for the
@@ -17,4 +18,4 @@ from app.models.enums import PipelineStage
 class SpeechToTextService(PipelineService):
     stage = PipelineStage.SPEECH_TO_TEXT
     name = "Speech-to-Text"
-    planned_for = "Phase 3"
+    planned_for = "Phase 4"

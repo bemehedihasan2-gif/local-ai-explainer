@@ -35,8 +35,10 @@ class ProjectStatus(str, Enum):
     CREATED = "created"  # record-only projects (Phase 1 POST /api/projects)
     UPLOADING = "uploading"  # file is being streamed to project storage
     VALIDATING = "validating"  # FFprobe inspection in progress
-    READY = "ready"  # valid video + metadata stored, awaiting Phase 3+
-    QUEUED = "queued"
+    READY = "ready"  # valid video + metadata stored, awaiting preprocessing
+    PREPROCESSING = "preprocessing"  # Phase 3 worker is building analysis assets
+    PREPARED = "prepared"  # analysis copy/thumbnail/audio ready (Phase 3 done)
+    QUEUED = "queued"  # future pipeline stages (Phase 4+)
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"

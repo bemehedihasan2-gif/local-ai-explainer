@@ -1,6 +1,7 @@
 import type {
   ApiErrorBody,
   CreateProjectPayload,
+  Job,
   Language,
   Project,
   ProjectStatus,
@@ -127,7 +128,15 @@ export const api = {
     }),
   deleteProject: (id: string) =>
     request<void>(`/api/projects/${id}`, { method: "DELETE" }),
+  startPreprocess: (id: string) =>
+    request<Job>(`/api/projects/${id}/preprocess`, { method: "POST" }),
+  listJobs: (id: string) => request<Job[]>(`/api/projects/${id}/jobs`),
 };
+
+/** Browser URL for a project's poster thumbnail (or null pre-PREPARED). */
+export function thumbnailUrl(project: Pick<Project, "id" | "thumbnail_path">): string | null {
+  return project.thumbnail_path ? `${BASE}/api/projects/${project.id}/thumbnail` : null;
+}
 
 /** Narrow a free-form project status into a known value. */
 export function normalizeStatus(value: string): ProjectStatus {
@@ -136,6 +145,8 @@ export function normalizeStatus(value: string): ProjectStatus {
     "uploading",
     "validating",
     "ready",
+    "preprocessing",
+    "prepared",
     "queued",
     "processing",
     "completed",

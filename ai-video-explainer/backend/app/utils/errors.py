@@ -148,6 +148,41 @@ class InvalidParameterError(ExplainerError):
     default_message = "A request parameter is invalid."
 
 
+class ProjectNotReadyError(ExplainerError):
+    """An operation requires a validated, READY project (e.g. preprocessing)."""
+
+    status_code = 409
+    code = "project_not_ready"
+    default_message = (
+        "This project is not ready for processing. Wait for validation "
+        "to finish, or re-upload the video."
+    )
+
+
+class JobConflictError(ExplainerError):
+    """A processing job for this project is already queued or running."""
+
+    status_code = 409
+    code = "job_conflict"
+    default_message = "A processing job is already queued or running for this project."
+
+
+class PreprocessError(ExplainerError):
+    """FFmpeg preprocessing failed (analysis copy / thumbnail / audio)."""
+
+    status_code = 500
+    code = "preprocess_failed"
+    default_message = "Video preprocessing failed."
+
+
+class AssetNotFoundError(ExplainerError):
+    """A generated asset (e.g. thumbnail) does not exist for this project."""
+
+    status_code = 404
+    code = "asset_not_found"
+    default_message = "The requested asset is not available for this project."
+
+
 class NotInPhase1Error(ExplainerError):
     """Feature is deliberately not implemented yet (scope guard).
 

@@ -18,7 +18,8 @@ from app.utils.paths import is_within, safe_join
 logger = get_logger("app.services.storage")
 
 #: Sub-directories created inside ``projects/<project_id>/``.
-PROJECT_SUBDIRS = ("input", "temp", "output")
+#: Phase 3 adds persistent analysis-asset folders next to the Phase 2 input.
+PROJECT_SUBDIRS = ("input", "temp", "output", "analysis", "thumbnails", "audio")
 
 
 class StorageService:
@@ -40,10 +41,10 @@ class StorageService:
         return safe_join(self.project_root(project_id), *parts)
 
     def ensure_project_dirs(self, project_id: str) -> dict[str, Path]:
-        """Create ``input/``, ``temp/`` and ``output/`` for a project.
+        """Create the project's sub-directories.
 
-        Layout: projects/<id>/{input,temp,output}. ``projects/<id>`` itself
-        is created too. Returns the named paths.
+        Layout: projects/<id>/{input,temp,output,analysis,thumbnails,audio}.
+        ``projects/<id>`` itself is created too. Returns the named paths.
         """
         root = self.project_root(project_id)
         try:

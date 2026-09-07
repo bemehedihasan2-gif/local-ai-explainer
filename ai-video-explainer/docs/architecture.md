@@ -15,33 +15,75 @@ video is being read, no full video is ever held in RAM, heavy work is
 file/stream based, and only **one heavy processing job runs at a time**
 (`PROCESSING_CONCURRENCY=1`, enforced by design + future worker).
 
-## 2. Current Phase 2 architecture
+## 2. Current Phase 3 architecture
 
 ```
 frontend (React/Vite/TS)                  backend (FastAPI, Python 3)
   drag&drop upload UI,              ─────▶ app/api        REST endpoints
   real progress %, metadata card,           ├─ health         /api/health
   history + details, roadmap                 ├─ projects      /api/projects…
-       │                                     └─ upload        POST /api/projects/upload
-       ▼                               app/services    uploads (streaming,
-  Vite dev proxy /api ──▶ :8000                       sha256, dedupe, statuses),
+  preprocess button + polling                ├─ preprocess     POST /api/projects/{id}/preprocess
+       │                                     ├─ jobs           GET  /api/projects/{id}/jobs
+       ▼                                     └─ thumbnail      GET  /api/projects/{id}/thumbnail
+  Vite dev proxy /api ──▶ :8000       app/services    uploads (streaming, sha256, dedupe),
+                                                       preprocess (analysis copy /
+                                                       thumbnail / 16 kHz WAV via FFmpeg),
+                                                       worker (single-threaded job queue),
                                                        ffmpeg detection, storage
                                        app/video       probe.py (FFprobe metadata
                                        │                  + validation rules)
                                        ▼
                                        app/database    SQLite (WAL, FK on,
-                                       │                  additive migration)
-                                       │              data/projects/<id>/input|temp|output
+                                       │                  additive migration P1→P2→P3)
+                                       │              data/projects/<id>/
+                                       │                input|temp|output
+                                       │                analysis|thumbnails|audio  (P3)
                                        app/models      pydantic schemas
                                        app/utils       errors/logging/paths
                                        app/ai          pipeline stubs (unchanged)
 ```
 
-Runtime state: `projects` rows carry all validated media metadata; large data
-always lives on disk under `data/projects/<id>/` (never RAM).
+Runtime state: `projects` rows carry all validated media metadata **plus**
+Phase 3 analysis-asset references (relative paths, dimensions, `prepared_at`);
+`processing_jobs` rows carry the worker's stage lifecycle. Large data always
+lives on disk under `data/projects/<id>/` (never RAM). The worker thread is
+started with the app and runs **one job at a time**
+(`PROCESSING_CONCURRENCY=1`).
 
-### 2a. Phase 2 upload & validation flow
+### 2b. Phase 3 preprocessing & analysis-asset flow
 
+```
+User clicks "Prepare for analysis" (project is READY)
+      │
+      ▼
+POST /api/projects/{id}/preprocess
+      │   guard: active job? -> 409 job_conflict · status READY? -> 409 project_not_ready
+      │   job row persisted (stage=preprocess, queued, 0%)
+      │   project -> preprocessing (0%)
+      ▼
+Worker queue (FIFO, single thread, concurrency=1)
+      │   job -> running
+      ▼
+FFmpeg step 1 — analysis copy     analysis/analysis.mp4
+      │     scale≤640, fps=5, libx264 veryfast CRF30, -an
+      │     progress: -progress pipe:1 -> elapsed/duration → 0-60%
+      ▼
+FFmpeg step 2 — poster thumbnail  thumbnails/poster.jpg  (60-75%)
+      ▼
+FFmpeg step 3 — audio extraction  audio/audio.wav        (75-95%)
+      │     16 kHz mono PCM — skipped when has_audio=false
+      ▼
+Project -> prepared (100%), job -> completed
+   analysis_path/width/height/fps, thumbnail_path, audio_path, prepared_at
+
+Failure anywhere: partial assets removed, job -> failed (error_message),
+project -> ready (retryable).
+```
+
+Progress is honest: each FFmpeg step reports media-elapsed-time/duration
+mapped into a fixed weight window; no invented percentages. The poster is
+served to the UI via `GET /api/projects/{id}/thumbnail` (path-safe, relative
+paths only).
 ```
 User selects video
       │
@@ -114,13 +156,13 @@ Video Upload ──▶ Preprocessing ──▶ Scene Detection ──▶ Speech-
                         Quality Control (duration, audio level, subtitle sync)
 ```
 
-### Stage ownership & service interfaces (Phase 2: upload real, AI stages stubbed)
+### Stage ownership & service interfaces (Phase 3: upload + preprocessing real, AI stages stubbed)
 
 | # | Stage                  | Service class (module)          | Planned | Local/zero-cost approach |
 |---|------------------------|----------------------------------|---------|-------------------------------------------------------|
-| 1 | Upload                 | `services/uploads.py` **done P2** | P2 ✅   | Streaming multipart → `projects/<id>/input/`, SHA-256, FFprobe validation |
-| 2 | Preprocessing          | (added P3)                       | P3      | FFmpeg stream copy / normalization to scratch files |
-| 3 | Speech-to-text         | `ai/stt.py`                      | P3      | faster-whisper small, int8, CPU, en/hi/bn |
+| 1 | Upload                 | `services/uploads.py`            | P2 ✅   | Streaming multipart → `projects/<id>/input/`, SHA-256, FFprobe validation |
+| 2 | Preprocessing          | `services/preprocess.py`         | P3 ✅   | Worker + FFmpeg: analysis copy (≤640px @ 5fps), poster, 16 kHz WAV |
+| 3 | Speech-to-text         | `ai/stt.py`                      | P4      | faster-whisper small, int8, CPU, en/hi/bn (reads audio/audio.wav) |
 | 4 | Scene detection        | (added P4)                       | P4      | FFmpeg scene filter + frame sampling, on-disk frames |
 | 5 | OCR                    | `ai/ocr.py`                      | P4      | Lightweight ONNX OCR (RapidOCR class), sampled frames |
 | 6 | Vision understanding   | `ai/vision.py`                   | P4      | Small open VLM (Q4), sampled keyframes only |
@@ -138,16 +180,19 @@ in `ai/registry.py`, and **raise a controlled not-implemented error** — an
 orchestrator can later run them uniformly; the API never pretends work
 happened. Upload (`services/uploads.py`) is the first *real* stage.
 
-### Orchestration plan (from Phase 3)
+### Orchestration (Phase 3: live for preprocessing)
 
-- A worker (asyncio task or single background thread — **no multiprocessing**
-  on the 8 GB target) pops the next `processing_jobs` row in `queued` state.
-- Per stage: `job.status=running, progress=x` → stage service executes
-  (file-based I/O) → result dict persisted → next stage enqueued.
-- `projects.status/progress` mirrors the aggregate; `error_message` captures
-  failures. A global gate enforces `PROCESSING_CONCURRENCY=1`.
+- `services/worker.py` is a **single daemon thread** with a FIFO queue — no
+  multiprocessing on the 8 GB target. Jobs are persisted in SQLite *before*
+  submission; the worker only transitions persisted states.
+- Per stage: `job: queued → running (progress%) → completed|failed`;
+  `projects.status/progress` mirrors the aggregate; `error_message` captures
+  failures. The worker never dies: unexpected exceptions are logged and the
+  job is failed cleanly.
+- The current stage is `preprocess` (analysis assets). Later phases plug more
+  `PipelineStage` values into the same queue, one stage per job.
 - Cleanup utilities (`services/cleanup.py`) sweep stale `temp/` files after
-  crashes so disk never fills.
+  crashes so disk never fills; failed preprocess jobs remove partial assets.
 
 ## 4. Resource-safety rules (8 GB RAM)
 
@@ -160,21 +205,24 @@ happened. Upload (`services/uploads.py`) is the first *real* stage.
 
 ## 5. API surface (stable for later phases)
 
-| Method | Endpoint                | Behavior (Phase 2)                                  |
-| ------ | ----------------------- | --------------------------------------------------- |
-| GET    | `/api/health`           | liveness                                            |
-| GET    | `/api/system/status`    | python/ffmpeg/sqlite/storage/db + limits, `phase: "2"` |
-| GET    | `/api/projects`         | list (metadata included)                            |
-| GET    | `/api/projects/{id}`    | one project + status/progress (404 on unknown id)   |
-| POST   | `/api/projects/upload`  | **multipart upload** → streams, validates, 201 READY |
-| POST   | `/api/projects`         | create empty record (legacy)                        |
-| DELETE | `/api/projects/{id}`    | 204; deletes record **and** `projects/<id>/` files   |
+| Method | Endpoint                  | Behavior (Phase 3)                                  |
+| ------ | ------------------------- | --------------------------------------------------- |
+| GET    | `/api/health`             | liveness                                            |
+| GET    | `/api/system/status`      | python/ffmpeg/sqlite/storage/db + limits + **worker** state, `phase: "3"` |
+| GET    | `/api/projects`           | list (metadata + asset refs included)               |
+| GET    | `/api/projects/{id}`      | one project + status/progress (404 on unknown id)   |
+| POST   | `/api/projects/upload`    | **multipart upload** → streams, validates, 201 READY |
+| POST   | `/api/projects/{id}/preprocess` | **queue analysis-asset job** → 201 JobOut (409 guards) |
+| GET    | `/api/projects/{id}/jobs` | job history (stage/status/progress/error)           |
+| GET    | `/api/projects/{id}/thumbnail` | poster JPEG (404 until PREPARED)               |
+| POST   | `/api/projects`           | create empty record (legacy)                        |
+| DELETE | `/api/projects/{id}`      | 204; deletes record **and** `projects/<id>/` files   |
 
 `POST /api/projects/upload` fields: `file`, `language` (`en|hi|bn`),
 `target_duration` (`120|180|240` seconds). Public responses never include
-internal filesystem paths. `POST /api/projects/{id}/generate` arrives in a
-later phase and the UI will poll `GET /api/projects/{id}` for reactive
-progress.
+internal filesystem paths (asset paths are relative only).
+`POST /api/projects/{id}/generate` arrives in a later phase and the UI will
+poll `GET /api/projects/{id}` for reactive progress.
 
 ## 6. Configuration & security model
 
@@ -191,8 +239,9 @@ progress.
   detection, UI, stubs, tests, docs.
 - **Phase 2 ✅** upload & validation engine (streaming storage, SHA-256
   fingerprint + duplicate detection, FFprobe metadata, status/progress).
-- **Phase 3** preprocessing & analysis asset generation, worker loop,
-  speech-to-text + first end-to-end narration path.
-- **Phase 4** scene detection, OCR, vision, story understanding.
+- **Phase 3 ✅** preprocessing & analysis assets (analysis copy, poster,
+  16 kHz WAV) + single-job background worker (`services/worker.py`).
+- **Phase 4** scene detection, speech-to-text, OCR, vision, story
+  understanding (local models read the analysis assets).
 - **Phase 5** script generation, TTS, subtitle sync, render/mix.
 - **Phase 6** quality control, queue hardening, cleanup + UX polish.

@@ -24,6 +24,7 @@ from app.config import Settings, get_settings
 from app.database.connection import Database
 from app.services.ffmpeg import FfmpegService
 from app.services.storage import StorageService
+from app.services.worker import ProcessingWorker
 from app.utils.errors import ExplainerError
 from app.utils.logging import get_logger, setup_logging
 
@@ -76,21 +77,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.database = db
         storage = StorageService(settings)
         storage.ensure_ready()
+        worker = ProcessingWorker(settings, db, FfmpegService(settings), storage)
+        app.state.worker = worker
+        worker.start()
         logger.info(
             "%s v%s starting (env=%s, db=%s)",
             settings.app_name, settings.app_version,
             settings.environment, settings.database_path,
         )
-        yield
-        logger.info("Application shutdown complete.")
+        try:
+            yield
+        finally:
+            worker.stop()
+            logger.info("Application shutdown complete.")
 
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
         description=(
-            "Phase 2: upload & validation engine for a local, zero-cost AI "
-            "video explainer. Videos stream to disk and are validated with "
-            "FFprobe; AI analysis and narration arrive in later phases."
+            "Phase 3: a local, zero-cost AI video explainer. Videos stream "
+            "to disk, are validated with FFprobe, then a single background "
+            "worker builds analysis assets (low-res copy, thumbnail, 16 kHz "
+            "WAV). AI analysis and narration arrive in later phases."
         ),
         lifespan=lifespan,
     )
@@ -100,6 +108,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.database = Database(settings.database_path)  # replaced at startup
     app.state.ffmpeg = FfmpegService(settings)
     app.state.storage = StorageService(settings)
+    app.state.worker = ProcessingWorker(
+        settings, app.state.database, app.state.ffmpeg, app.state.storage
+    )
 
     app.add_middleware(
         CORSMiddleware,
@@ -118,17 +129,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "app": settings.app_name,
             "version": settings.app_version,
-            "phase": 2,
+            "phase": 3,
             "api": {
                 "health": "/api/health",
                 "system_status": "/api/system/status",
                 "projects": "/api/projects",
                 "upload": "/api/projects/upload",
+                "preprocess": "/api/projects/{id}/preprocess",
+                "jobs": "/api/projects/{id}/jobs",
+                "thumbnail": "/api/projects/{id}/thumbnail",
             },
             "docs": "/docs",
         }
 
-    logger.info("Application factory ready (phase 2).")
+    logger.info("Application factory ready (phase 3).")
     return app
 
 

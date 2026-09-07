@@ -8,11 +8,18 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import get_database, get_ffmpeg_service, get_settings, get_storage_service
+from app.api.deps import (
+    get_database,
+    get_ffmpeg_service,
+    get_settings,
+    get_storage_service,
+    get_worker,
+)
 from app.config import Settings
 from app.database.connection import Database
 from app.services.ffmpeg import FfmpegService
 from app.services.storage import StorageService
+from app.services.worker import ProcessingWorker
 from app.utils.logging import log_context
 
 router = APIRouter()
@@ -39,6 +46,7 @@ def system_status(
     db: Database = Depends(get_database),
     ffmpeg: FfmpegService = Depends(get_ffmpeg_service),
     storage: StorageService = Depends(get_storage_service),
+    worker: ProcessingWorker = Depends(get_worker),
 ) -> dict[str, object]:
     """Full capability report: python, ffmpeg, sqlite, storage, app."""
     with log_context():
@@ -100,16 +108,28 @@ def system_status(
                 "heavy_jobs": settings.processing_concurrency,
                 "note": "One heavy video-processing job at a time (8 GB RAM target).",
             },
+            "worker": worker.status(),
             "limits": {
                 "max_upload_size_mb": settings.max_upload_size_mb,
                 "upload_chunk_size_bytes": settings.upload_chunk_size,
                 "ffprobe_timeout_seconds": settings.ffprobe_timeout_seconds,
                 "allowed_video_extensions": list(settings.allowed_video_extensions),
             },
-            "phase": "2",
+            "preprocess": {
+                "analysis_width": settings.analysis_width,
+                "analysis_fps": settings.analysis_fps,
+                "analysis_encoder_preset": settings.analysis_encoder_preset,
+                "analysis_crf": settings.analysis_crf,
+                "thumbnail_width": settings.thumbnail_width,
+                "audio_sample_rate": settings.audio_sample_rate,
+                "audio_channels": settings.audio_channels,
+                "preprocess_timeout_seconds": settings.preprocess_timeout_seconds,
+            },
+            "phase": "3",
             "message": (
-                "Phase 2 upload & validation engine: videos stream to disk, "
-                "are fingerprinted (SHA-256) and validated with FFprobe. "
-                "Video analysis/generation are connected in later phases."
+                "Phase 3 preprocessing: READY videos become PREPARED with "
+                "analysis assets (low-res copy, poster thumbnail, 16 kHz "
+                "WAV) built by a single background worker. AI analysis and "
+                "generation are connected in later phases."
             ),
         }

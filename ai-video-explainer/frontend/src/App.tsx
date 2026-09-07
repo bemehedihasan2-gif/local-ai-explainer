@@ -5,7 +5,7 @@ import {
   type ChangeEvent,
   type DragEvent,
 } from "react";
-import { api, ApiError, uploadVideo } from "./api";
+import { api, ApiError, thumbnailUrl, uploadVideo } from "./api";
 import {
   DURATIONS,
   LANGUAGES,
@@ -31,6 +31,8 @@ const STATUS_LABEL: Record<string, string> = {
   uploading: "Uploading",
   validating: "Validating",
   ready: "Ready",
+  preprocessing: "Preprocessing",
+  prepared: "Prepared",
   queued: "Queued",
   processing: "Processing",
   completed: "Completed",
@@ -83,9 +85,9 @@ function extensionOf(name: string): string {
 
 const PIPELINE: { name: string; phase: string; done?: boolean }[] = [
   { name: "Video Upload", phase: "Phase 2", done: true },
-  { name: "Preprocessing", phase: "Phase 3" },
-  { name: "Scene Detection", phase: "Phase 3" },
-  { name: "Speech-to-Text", phase: "Phase 3" },
+  { name: "Preprocessing", phase: "Phase 3", done: true },
+  { name: "Scene Detection", phase: "Phase 4" },
+  { name: "Speech-to-Text", phase: "Phase 4" },
   { name: "OCR", phase: "Phase 4" },
   { name: "Vision Understanding", phase: "Phase 4" },
   { name: "Story Understanding", phase: "Phase 4" },
@@ -236,7 +238,7 @@ export default function App() {
       setNotice({
         kind: "info",
         title: "Video ready — validated & fingerprinted",
-        body: `FFprobe confirmed "${project.original_filename}" (${clock(project.duration)}, ${project.width}×${project.height}). The AI explainer pipeline connects to ready videos in Phase 3+.`,
+        body: `FFprobe confirmed "${project.original_filename}" (${clock(project.duration)}, ${project.width}×${project.height}). Preprocess it next (Phase 3) to build the analysis copy, poster and 16 kHz audio track.`,
       });
       void refreshProjects();
     } catch (err) {
@@ -259,10 +261,53 @@ export default function App() {
   const generate = (project: Project) => {
     setNotice({
       kind: "info",
-      title: "Generation is planned for the next phases",
-      body: `"${project.original_filename}" is ready and validated. Script generation, narration (TTS), subtitles and rendering arrive in Phases 3-6 — no fake processing is run here.`,
+      title: "Generation is planned for Phases 4-6",
+      body: `"${project.original_filename}" is prepared: its analysis assets are ready. Scene analysis, script generation, narration (TTS), subtitles and rendering arrive in later phases — no fake processing is run here.`,
     });
   };
+
+  /* ---- Phase 3 preprocessing -------------------------------------- */
+
+  const [prepBusy, setPrepBusy] = useState(false);
+
+  const startPreprocess = async (project: Project) => {
+    setPrepBusy(true);
+    setNotice(null);
+    try {
+      await api.startPreprocess(project.id);
+      setView(await api.getProject(project.id)); // -> preprocessing
+      setProjects(await api.listProjects());
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : String(err);
+      setNotice({
+        kind: "error",
+        title: "Could not start preprocessing",
+        body: message,
+      });
+    } finally {
+      setPrepBusy(false);
+    }
+  };
+
+  // While any project is being preprocessed, poll project + history so the
+  // progress bar and status tags stay honest (1 s cadence, cheap reads).
+  const anyPreprocessing = projects.some((p) => p.status === "preprocessing");
+  useEffect(() => {
+    if (!anyPreprocessing && view?.status !== "preprocessing") return;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          if (view && view.status === "preprocessing") {
+            setView(await api.getProject(view.id));
+          }
+          setProjects(await api.listProjects());
+        } catch {
+          // Transient backend hiccup; the next tick retries.
+        }
+      })();
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [anyPreprocessing, view]);
 
   /* ---- history ---------------------------------------------------- */
 
@@ -468,8 +513,9 @@ export default function App() {
                     : "Upload & validate video"}
               </button>
               <p className="hint" style={{ marginTop: 10, marginBottom: 0 }}>
-                Phase 2 does not start AI processing — no analysis, no narration, no fake
-                results. Generation connects to ready videos in later phases.
+                Phase 3 adds preprocessing: after upload, "Prepare for analysis" queues a
+                single background worker to build the low-res analysis copy, poster
+                thumbnail and 16 kHz audio track. AI analysis arrives in later phases.
               </p>
             </section>
 
@@ -478,9 +524,10 @@ export default function App() {
               {system && <SystemCard system={system} />}
 
               {view && (
-                <ReadyVideoCard
+                <ProjectCard
                   project={view}
-                  canGenerate={view.status === "ready"}
+                  prepBusy={prepBusy}
+                  onStartPreprocess={() => void startPreprocess(view)}
                   onGenerate={() => generate(view)}
                 />
               )}
@@ -489,7 +536,7 @@ export default function App() {
                 <div className="flex-between">
                   <h2>Pipeline roadmap</h2>
                   <span className="chip-status">
-                    <span className="dot" /> upload engine live
+                    <span className="dot" /> upload + preprocess live
                   </span>
                 </div>
                 <ul className="pipeline">
@@ -588,9 +635,10 @@ export default function App() {
           </section>
 
           <footer className="footer-note">
-            Local AI Video Explainer — Phase 2 upload & validation engine. Streaming uploads,
-            SHA-256 fingerprints, FFprobe validation, SQLite metadata. No paid APIs, no cloud
-            models, no secrets in source.
+            Local AI Video Explainer — Phase 3: upload & validation + preprocessing worker.
+            Streaming uploads, SHA-256 fingerprints, FFprobe validation, analysis assets
+            (copy / poster / 16 kHz WAV), SQLite metadata. No paid APIs, no cloud models,
+            no secrets in source.
           </footer>
         </>
       )}
@@ -599,16 +647,18 @@ export default function App() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Ready video (metadata) card                                        */
+/*  Project card: metadata + Phase 3 preprocessing flow                */
 /* ------------------------------------------------------------------ */
 
-function ReadyVideoCard({
+function ProjectCard({
   project,
-  canGenerate,
+  prepBusy,
+  onStartPreprocess,
   onGenerate,
 }: {
   project: Project;
-  canGenerate: boolean;
+  prepBusy: boolean;
+  onStartPreprocess: () => void;
   onGenerate: () => void;
 }) {
   const resolution =
@@ -647,17 +697,51 @@ function ReadyVideoCard({
     { label: "Uploaded", value: formatWhen(project.created_at) },
   ];
 
+  if (project.status === "prepared") {
+    rows.push(
+      {
+        label: "Analysis copy",
+        value:
+          project.analysis_width && project.analysis_height
+            ? `${project.analysis_width} × ${project.analysis_height} @ ${project.analysis_fps} fps`
+            : "—",
+      },
+      {
+        label: "Audio track (WAV)",
+        value: project.audio_path ? "16 kHz mono — speech-to-text input" : "Skipped (no audio)",
+      },
+      { label: "Prepared", value: project.prepared_at ? formatWhen(project.prepared_at) : "—" },
+    );
+  }
+
+  const thumb = thumbnailUrl(project);
+
   return (
-    <section className={`card ${canGenerate ? "ready-card" : ""}`}>
+    <section className={`card ${project.status === "prepared" ? "ready-card" : ""}`}>
       <div className="flex-between">
-        <h2>Video ready</h2>
+        <h2>
+          {project.status === "prepared"
+            ? "Analysis assets ready"
+            : project.status === "preprocessing"
+              ? "Preprocessing video"
+              : "Video"}
+        </h2>
         <span className={`tag tag-${project.status}`}>
           {STATUS_LABEL[project.status] ?? project.status}
         </span>
       </div>
       <p className="hint" style={{ marginTop: -6 }}>
-        {project.original_filename} — validated by FFprobe, ready for the AI pipeline.
+        {project.original_filename}
       </p>
+
+      {thumb && (
+        <img
+          className="thumb"
+          src={thumb}
+          alt={`Poster frame of ${project.original_filename}`}
+        />
+      )}
+
       <div className="kv-grid">
         {rows.map((row) => (
           <div className="kv" key={row.label}>
@@ -668,19 +752,60 @@ function ReadyVideoCard({
           </div>
         ))}
       </div>
-      <button
-        type="button"
-        className="btn btn-primary"
-        onClick={onGenerate}
-        disabled={!canGenerate}
-        title={
-          canGenerate
-            ? ""
-            : "Generation connects to videos whose validation has finished."
-        }
-      >
-        Generate explanation {canGenerate ? "" : "(pending ready video)"}
-      </button>
+
+      {project.status === "preprocessing" && (
+        <div
+          className="upload-progress"
+          role="progressbar"
+          aria-valuenow={Math.round(project.progress)}
+        >
+          <div className="flex-between">
+            <strong>Building analysis assets…</strong>
+            <span className="muted">{Math.round(project.progress)}%</span>
+          </div>
+          <span className="progress-track">
+            <i style={{ width: `${project.progress}%` }} />
+          </span>
+          <p className="hint">
+            FFmpeg is creating the analysis copy, poster frame and 16 kHz audio track.
+            The worker runs one heavy job at a time — this page updates automatically.
+          </p>
+        </div>
+      )}
+
+      {project.status === "ready" && (
+        <>
+          {project.error_message && (
+            <p className="field-error" role="alert">
+              Preprocessing failed: {project.error_message} The video itself is fine —
+              you can try again.
+            </p>
+          )}
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={onStartPreprocess}
+            disabled={prepBusy}
+          >
+            {prepBusy ? "Queuing…" : "Prepare for analysis"}
+          </button>
+          <p className="hint" style={{ marginTop: 8, marginBottom: 0 }}>
+            Queues the Phase 3 worker: low-res analysis copy (≤640px @ 5 fps), poster
+            thumbnail and 16 kHz mono WAV for later speech-to-text.
+          </p>
+        </>
+      )}
+
+      {project.status === "prepared" && (
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={onGenerate}
+          title="Script generation, narration and rendering arrive in later phases."
+        >
+          Generate explanation
+        </button>
+      )}
     </section>
   );
 }

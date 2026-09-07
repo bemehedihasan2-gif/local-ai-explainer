@@ -30,6 +30,8 @@ export type ProjectStatus =
   | "uploading"
   | "validating"
   | "ready"
+  | "preprocessing"
+  | "prepared"
   | "queued"
   | "processing"
   | "completed"
@@ -51,11 +53,34 @@ export interface Project {
   bitrate: number | null;
   has_video: boolean | null;
   has_audio: boolean | null;
+  // Phase 3 analysis assets (relative paths inside the project folder).
+  analysis_path: string | null;
+  analysis_width: number | null;
+  analysis_height: number | null;
+  analysis_fps: number | null;
+  thumbnail_path: string | null;
+  audio_path: string | null;
+  prepared_at: string | null;
   language: Language;
   target_duration_seconds: number;
   status: ProjectStatus;
   progress: number;
   error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type JobStatus = "queued" | "running" | "completed" | "failed";
+
+export interface Job {
+  id: string;
+  project_id: string;
+  stage: string;
+  status: JobStatus;
+  progress: number;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -100,11 +125,26 @@ export interface SystemStatus {
     directories: { name: string; path: string; exists: boolean; writable: boolean }[];
   };
   concurrency: { heavy_jobs: number };
+  worker: {
+    running: boolean;
+    queue_size: number;
+    active_job: string | null;
+  };
   limits: {
     max_upload_size_mb: number;
     upload_chunk_size_bytes: number;
     ffprobe_timeout_seconds: number;
     allowed_video_extensions: string[];
+  };
+  preprocess: {
+    analysis_width: number;
+    analysis_fps: number;
+    analysis_encoder_preset: string;
+    analysis_crf: number;
+    thumbnail_width: number;
+    audio_sample_rate: number;
+    audio_channels: number;
+    preprocess_timeout_seconds: number;
   };
   phase: string;
   message: string;

@@ -87,6 +87,30 @@ class JobRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def update_progress(self, job_id: str, progress: float) -> dict[str, Any]:
+        """Persist a progress tick without touching status/timestamps."""
+        now = _now()
+        with self._db.connect() as conn:
+            conn.execute(
+                "UPDATE processing_jobs SET progress = ?, updated_at = ? "
+                "WHERE id = ?",
+                (progress, now, job_id),
+            )
+        return self.get(job_id)
+
+    def has_active_job(self, project_id: str) -> bool:
+        """True when a queued or running job exists for the project."""
+        with self._db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM processing_jobs
+                WHERE project_id = ? AND status IN ('queued', 'running')
+                LIMIT 1
+                """,
+                (project_id,),
+            ).fetchone()
+        return row is not None
+
     def update_status(
         self,
         job_id: str,
