@@ -1,4 +1,4 @@
-# Local AI Video Explainer — Phase 5: Story & Script on Your PC
+# Local AI Video Explainer — Phase 6: Local Narration & Subtitles on Your PC
 
 A **local, zero-cost AI video explainer** for Windows: drop in almost any video
 (movie, TV, gameplay, tutorial, lecture, sports, screen recording, social,
@@ -35,8 +35,18 @@ MP4 with synchronized subtitles.
 > *before* writing), an **original narration script** in English / Hindi /
 > Bengali, and **deterministic quality control** (0-100 score, language,
 > length, chronology, repetition, source-copying and ungrounded-claims
-> checks). TTS, subtitles and rendering remain later phases — nothing is
-> faked.
+> checks).
+>
+> **Phase 6 (this phase) voices that script locally:** a **SCRIPT_READY**
+> project becomes **NARRATION_READY** through script segmentation into
+> narration units, per-segment synthesis with a **local Piper TTS engine**
+> (en/hi/bn voices configured manually — never downloaded silently), **real
+> audio timing measured from the generated WAV** (never word-count
+> estimates), a narration timeline that preserves the Phase 5 scene
+> mapping, SRT/VTT subtitles timed to the actual audio, lossless WAV
+> assembly with gentle normalization, and a deterministic 0-100 QC score.
+> Mixing narration with the original audio and the final MP4 render remain
+> Phase 7 — nothing is faked.
 >
 > **No paid APIs.** No Claude/OpenAI/Gemini keys. Everything runs on the
 > user's PC, targeting 8 GB RAM, CPU-only, integrated graphics. Only **one
@@ -62,6 +72,8 @@ All storage paths resolve relative to this folder by default.
 | faster-whisper | Python package + one model | **Optional** — speech-to-text. Without it STT reports `model_download_required` and the rest of the analysis still runs |
 | llama.cpp | `llama-cli` binary | **Required for Phase 5** — story understanding + script generation. Install via `winget install llama.cpp` or the official GitHub release, or set `LLAMA_CPP_PATH` |
 | GGUF model | one small quantized file (~1 GB) | **Required for Phase 5** — e.g. `Qwen2.5-1.5B-Instruct Q4_K_M`. Downloaded once explicitly (never silently); see setup below |
+| Piper | `piper` CLI binary | **Required for Phase 6 narration** — install the official release (or `pip install piper-tts`), or set `TTS_EXECUTABLE_PATH` |
+| Piper voices | `.onnx` + `.onnx.json` per language | **Required for Phase 6** — English/Hindi/Bengali voices. Downloaded once explicitly (never silently); see setup below |
 
 FFmpeg is **not** downloaded automatically. Install it (e.g. `winget install
 ffmpeg` or the gyan.dev build) and ensure `ffmpeg`/`ffprobe` are on PATH, or
@@ -111,6 +123,34 @@ hint and refuses with `llm_unavailable` / `model_download_required` — the
 pipeline never fakes a story. `GET /api/system/status` → `llm` reports
 `available` / `model_available` / `model_name` (basename only) so the UI can
 warn before you even click Generate.
+
+### Phase 6 — first-run local TTS + voice setup (required for Generate Narration, no API key)
+
+Narration uses the **Piper** CLI with one voice per language. The app
+**never downloads a voice silently** — fetch the official English voice once,
+explicitly (~60-100 MB):
+
+```bat
+scripts\setup_piper_voices.bat        :: en_US-lessac-medium into models\voices\
+```
+
+(Linux/macOS: `scripts/setup_piper_voices_unix.sh`.) Hindi and Bengali voices
+are community-provided on Hugging Face; run the same script with a voice file
+path to fetch them (see the script header). Then point `.env` at the files:
+
+```dotenv
+TTS_PROVIDER=piper
+TTS_EXECUTABLE_PATH=C:\piper\piper.exe
+TTS_VOICE_EN=models\voices\en\en_US\lessac\medium\en_US-lessac-medium.onnx
+TTS_VOICE_HI=models\voices\hi\...\hi_IN-....onnx
+TTS_VOICE_BN=models\voices\bn\...\bn_IN-....onnx
+```
+
+While the engine or a language voice is missing, **Generate narration** for
+that language shows a setup hint and refuses with `tts_unavailable` /
+`voice_unavailable` — the pipeline never fakes audio. `GET /api/system/status`
+→ `tts` reports `available`, `executable_available` and per-language voice
+availability so the UI warns before you click.
 
 ## Supported video formats
 
@@ -240,7 +280,7 @@ everywhere — including the full preprocess **and analysis** job lifecycles,
 worker serialization, failure paths, STT/OCR/vision service units and
 timeline alignment.
 
-## API (Phase 5)
+## API
 
 | Method | Endpoint                        | Purpose                                   |
 | ------ | ------------------------------- | ----------------------------------------- |
@@ -264,6 +304,12 @@ timeline alignment.
 | GET    | `/api/projects/{id}/duration-plan`  | Word budgets per scene + targets      |
 | GET    | `/api/projects/{id}/script`        | The generated narration script        |
 | GET    | `/api/projects/{id}/script-quality` | Deterministic QC report (0-100)       |
+| POST   | `/api/projects/{id}/generate-narration` | **Queue Phase 6 TTS narration** (JSON: `language`, optional `voice_id`) |
+| GET    | `/api/projects/{id}/narration-status` | Latest narration-run summary + live stage |
+| GET    | `/api/projects/{id}/narration`     | Narration manifest (relative paths only) |
+| GET    | `/api/projects/{id}/narration/audio` | Streams the assembled `narration.wav` |
+| GET    | `/api/projects/{id}/narration/subtitles?format=srt\|vtt` | Subtitles timed to real audio |
+| GET    | `/api/projects/{id}/narration/segments` | Segment timeline (text/scene ids/times) |
 | DELETE | `/api/projects/{id}`            | Delete record **and** controlled files    |
 
 ### `POST /api/projects/upload`
@@ -320,6 +366,10 @@ Stack traces go to `logs/errors.log` only.
 | `prepared`     | Analysis copy + poster + 16 kHz WAV ready — input for Phase 4+ |
 | `analyzing`    | Phase 4 worker is running the local analysis (0 → 100%)        |
 | `analyzed`     | Scenes / transcript / OCR / visual / timeline stored (100%)    |
+| `scripting`    | Phase 5 worker is writing the story + script (0 → 100%)       |
+| `script_ready` | Original explanation ready (en/hi/bn) — awaiting narration   |
+| `narrating`    | Phase 6 worker is synthesizing narration (0 → 100%)          |
+| `narration_ready` | TTS WAV + synced SRT/VTT ready (Phase 6 complete)         |
 | `failed`       | Upload/validation/preprocessing/analysis failed; `error_message` explains |
 | `created`      | Record-only project created via the legacy endpoint             |
 | `queued/processing/completed` | Reserved for the future pipeline worker            |
@@ -553,9 +603,17 @@ resident between jobs, `PROCESSING_CONCURRENCY=1`.
 
 ## Phase 5 limitations (honest)
 
-- **No TTS / subtitle sync / render yet** — the pipeline ends at
-  SCRIPT_READY. The estimated narration duration is `words ÷ WPM`, not real
-  audio timing.
+- **No final MP4 yet** — Phase 6 ends at **NARRATION_READY**: a real
+  narration WAV plus SRT/VTT subtitles timed to the actual generated audio
+  (never word-count estimates). Mixing narration with the original audio and
+  rendering the final MP4 come in Phase 7.
+- **Voices must be installed manually** — English is one explicit download
+  (`scripts/setup_piper_voices.*`); Hindi/Bengali depend on the community
+  voices you fetch and configure. Missing voices fail honestly with
+  `voice_unavailable`, never fake audio.
+- **TTS is slow on this hardware** — one short segment at a time on the
+  single worker. A 3-minute narration can take several minutes of synthesis
+  on a Ryzen 3 3200G; progress is persisted per stage and retry is safe.
 - **No visual understanding model** — the LLM only sees transcript/OCR
   text and numeric visual metadata, never the frames themselves. It is
   explicitly told not to describe visible objects that the evidence does
@@ -585,8 +643,11 @@ resident between jobs, `PROCESSING_CONCURRENCY=1`.
 5. **Phase 5 (this phase)** — story understanding, important-scene
    selection, duration-aware script generation (en/hi/bn) with
    deterministic QC → SCRIPT_READY.
-6. **Phase 6** — TTS narration, subtitle sync, audio mixing, FFmpeg
-   rendering, quality control, queue hardening, cleanup polish.
+6. **Phase 6 (done)** — local TTS narration (Piper CLI, en/hi/bn voices),
+   real-audio segment timing, SRT/VTT subtitles, narration assembly +
+   normalization, deterministic audio/timeline/subtitle QC → NARRATION_READY.
+7. **Phase 7** — mix narration with the original audio, render the final MP4
+   (FFmpeg), final QC and polish.
 
 See `docs/architecture.md` for the full pipeline design.
 

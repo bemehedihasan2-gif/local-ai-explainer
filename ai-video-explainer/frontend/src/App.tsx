@@ -101,6 +101,41 @@ function clock(seconds: number | null): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+function clockMs(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
+  const whole = Math.round(ms / 1000);
+  const m = Math.floor(whole / 60);
+  const s = whole % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+interface SrtCue {
+  index: number;
+  start: string;
+  end: string;
+  text: string;
+}
+
+/** Split an SRT document into its cues for lightweight preview. */
+function parseSrt(srt: string): SrtCue[] {
+  const cues: SrtCue[] = [];
+  for (const rawBlock of srt.split(/\r?\n\r?\n/)) {
+    const lines = rawBlock.split(/\r?\n/).map((line) => line.trim());
+    const index = Number.parseInt(lines[0] ?? "", 10);
+    const times = lines[1] ?? "";
+    const arrow = times.indexOf("-->");
+    const text = lines.slice(2).join(" ").trim();
+    if (!Number.isFinite(index) || arrow < 0 || !text) continue;
+    cues.push({
+      index,
+      start: times.slice(0, arrow).trim(),
+      end: times.slice(arrow + 3).trim(),
+      text,
+    });
+  }
+  return cues;
+}
+
 function extensionOf(name: string): string {
   const dot = name.lastIndexOf(".");
   return dot >= 0 ? name.slice(dot).toLowerCase() : "";
@@ -804,6 +839,13 @@ export default function App() {
             {/* ---------- Right: status + details ---------- */}
             <div className="stack">
               {system && <SystemCard system={system} />}
+              {system && !system.tts.available && (
+                <p className="hint" style={{ margin: "-6px 2px 0", fontSize: 12 }}>
+                  ⚠ Local TTS ({system.tts.provider}) not ready — narration stays
+                  disabled until a TTS engine and voices are configured
+                  (see README, Phase 6).
+                </p>
+              )}
 
               {view && (
                 <ProjectCard
@@ -822,9 +864,16 @@ export default function App() {
                   scriptDuration={scriptDuration}
                   scriptBusy={scriptBusy}
                   llm={system?.llm ?? null}
+                  narrationRun={narrationRun}
+                  narrationManifest={narrationManifest}
+                  narrationTimeline={narrationTimeline}
+                  narrationSrt={narrationSrt}
+                  narrationBusy={narrationBusy}
+                  tts={system?.tts ?? null}
                   onStartPreprocess={() => void startPreprocess(view)}
                   onStartAnalysis={() => void startAnalysis(view)}
                   onGenerate={() => void startScript(view)}
+                  onStartNarration={() => void startNarration(view)}
                   onScriptLanguage={setScriptLanguage}
                   onScriptDuration={setScriptDuration}
                 />
@@ -834,7 +883,7 @@ export default function App() {
                 <div className="flex-between">
                   <h2>Pipeline roadmap</h2>
                   <span className="chip-status">
-                    <span className="dot" /> upload · preprocess · analysis · script live
+                    <span className="dot" /> upload · analyze · script · narration live
                   </span>
                 </div>
                 <ul className="pipeline">
@@ -933,10 +982,11 @@ export default function App() {
           </section>
 
           <footer className="footer-note">
-            Local AI Video Explainer — Phase 5: upload, preprocessing, on-device
+            Local AI Video Explainer — Phase 6: upload, preprocessing, on-device
             analysis (scene detection, speech-to-text, OCR, visual metadata, aligned
-            timeline) and a story + script written by a small local LLM (llama.cpp,
-            English/Hindi/Bengali, 2-4 minute targets). Streaming uploads, SHA-256
+            timeline), a story + script written by a small local LLM (llama.cpp) and
+            narration voiced locally (Piper) with subtitles timed to the actual audio.
+            English/Hindi/Bengali, 2-4 minute targets. Streaming uploads, SHA-256
             fingerprints, SQLite metadata, single background worker. No paid APIs,
             no cloud models, no secrets in source.
           </footer>
@@ -966,9 +1016,16 @@ function ProjectCard({
   scriptDuration,
   scriptBusy,
   llm,
+  narrationRun,
+  narrationManifest,
+  narrationTimeline,
+  narrationSrt,
+  narrationBusy,
+  tts,
   onStartPreprocess,
   onStartAnalysis,
   onGenerate,
+  onStartNarration,
   onScriptLanguage,
   onScriptDuration,
 }: {
@@ -987,9 +1044,16 @@ function ProjectCard({
   scriptDuration: DurationMinutes;
   scriptBusy: boolean;
   llm: SystemStatus["llm"] | null;
+  narrationRun: NarrationRun | null;
+  narrationManifest: NarrationManifestDocument | null;
+  narrationTimeline: NarrationTimelineDocument | null;
+  narrationSrt: string | null;
+  narrationBusy: boolean;
+  tts: SystemStatus["tts"] | null;
   onStartPreprocess: () => void;
   onStartAnalysis: () => void;
   onGenerate: () => void;
+  onStartNarration: () => void;
   onScriptLanguage: (language: Language) => void;
   onScriptDuration: (duration: DurationMinutes) => void;
 }) {
@@ -1060,7 +1124,11 @@ function ProjectCard({
               ? "Writing the explanation"
               : project.status === "script_ready"
                 ? "Explanation ready"
-                : "Video";
+                : project.status === "narrating"
+                  ? "Generating narration locally"
+                  : project.status === "narration_ready"
+                    ? "Narration ready"
+                    : "Video";
 
   return (
     <section
@@ -1230,10 +1298,72 @@ function ProjectCard({
             onDuration={onScriptDuration}
             onGenerate={onGenerate}
           />
+          <NarrationControls
+            tts={tts}
+            script={script}
+            scriptQuality={scriptQuality}
+            busy={narrationBusy}
+            language={scriptLanguage}
+            onStartNarration={onStartNarration}
+          />
         </>
       )}
 
-      {(project.status === "analyzed" || project.status === "script_ready") &&
+      {project.status === "narrating" && (
+        <>
+          {project.error_message && (
+            <p className="field-error" role="alert">
+              {project.error_message}
+            </p>
+          )}
+          <NarrationProgress
+            project={project}
+            narrationRun={narrationRun}
+            language={scriptLanguage}
+          />
+        </>
+      )}
+
+      {project.status === "narration_ready" && (
+        <>
+          {project.error_message && (
+            <p className="field-error" role="alert">
+              {project.error_message}
+            </p>
+          )}
+          <ScriptPanel
+            project={project}
+            scriptRun={scriptRun}
+            story={story}
+            selectedScenes={selectedScenes}
+            durationPlan={durationPlan}
+            script={script}
+            scriptQuality={scriptQuality}
+            language={scriptLanguage}
+            duration={scriptDuration}
+            busy={scriptBusy}
+            llm={llm}
+            onLanguage={onScriptLanguage}
+            onDuration={onScriptDuration}
+            onGenerate={onGenerate}
+          />
+          <NarrationPreview
+            project={project}
+            narrationRun={narrationRun}
+            manifest={narrationManifest}
+            timeline={narrationTimeline}
+            srt={narrationSrt}
+            tts={tts}
+            busy={narrationBusy}
+            language={scriptLanguage}
+            onStartNarration={onStartNarration}
+          />
+        </>
+      )}
+
+      {(project.status === "analyzed" ||
+        project.status === "script_ready" ||
+        project.status === "narration_ready") &&
         analysis && (
           <AnalysisPanel
             project={project}
@@ -1629,6 +1759,431 @@ function ScriptPanel({
       <p className="hint" style={{ marginTop: 8, marginBottom: 0 }}>
         Changing the language or duration re-runs the backend pipeline for
         this video — previous results stay until the new run finishes.
+      </p>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Phase 6: narration controls + live progress + audio/subtitle UI   */
+/* ------------------------------------------------------------------ */
+
+type TtsInfo = SystemStatus["tts"] | null;
+
+function voiceForLanguage(tts: TtsInfo, language: Language) {
+  return tts?.languages[language] ?? null;
+}
+
+function NarrationControls({
+  tts,
+  script,
+  scriptQuality,
+  busy,
+  language,
+  onStartNarration,
+}: {
+  tts: TtsInfo;
+  script: ScriptDocument | null;
+  scriptQuality: ScriptQualityDocument | null;
+  busy: boolean;
+  language: Language;
+  onStartNarration: () => void;
+}) {
+  const engineReady = Boolean(tts?.available);
+  const voice = voiceForLanguage(tts, language);
+  const voiceReady = engineReady && Boolean(voice?.available);
+
+  const summaryRows = [
+    { label: "Script language", value: LANGUAGE_LABEL[language] },
+    { label: "Word count", value: script ? String(script.word_count) : "—" },
+    {
+      label: "Target length",
+      value:
+        script?.target_duration_seconds != null
+          ? `${Math.round(script.target_duration_seconds / 60)} min`
+          : "—",
+    },
+    {
+      label: "Estimated narration",
+      value: scriptQuality
+        ? `≈ ${clock(scriptQuality.estimated_duration_seconds)} @ ${scriptQuality.narration_wpm} wpm`
+        : "—",
+    },
+    {
+      label: "TTS engine",
+      value: engineReady
+        ? `${tts?.provider ?? "piper"} ready`
+        : tts == null
+          ? "status unknown"
+          : `${tts?.provider ?? "piper"} not found`,
+    },
+    {
+      label: "Sample rate",
+      value: tts?.settings.sample_rate
+        ? `${tts.settings.sample_rate} Hz mono`
+        : "—",
+    },
+  ];
+
+  return (
+    <div className="script-panel mt-12">
+      <h3 className="panel-title">Generate narration</h3>
+      <p className="hint" style={{ margin: 0 }}>
+        The approved {LANGUAGE_LABEL[language] ?? language} script is ready to be spoken.
+        Phase 6 synthesizes it locally, segment by segment, then times subtitles to the
+        real generated audio.
+      </p>
+
+      <div className="kv-grid" style={{ marginTop: 10 }}>
+        {summaryRows.map((row) => (
+          <div className="kv" key={row.label}>
+            <span className="kv-key">{row.label}</span>
+            <span className="kv-value" title={row.value}>
+              {row.value}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <h3 className="panel-title">Voices</h3>
+      <div className="voice-list" role="list" aria-label="TTS voice availability">
+        {LANGUAGES.map((lang) => {
+          const entry = voiceForLanguage(tts, lang.code);
+          const ok = Boolean(tts?.available && entry?.available);
+          return (
+            <div className="voice-row" key={lang.code}>
+              <span className="voice-lang">{lang.label}</span>
+              {ok ? (
+                <span className="tag tag-voice-ready">
+                  ready · {entry?.voice_id ?? "configured voice"}
+                </span>
+              ) : (
+                <span className="tag tag-voice-missing" title={entry?.note ?? ""}>
+                  not configured
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {tts != null && !engineReady && (
+        <div className="warn-box">
+          <strong>Local TTS engine not ready</strong>
+          <p style={{ margin: "6px 0 0" }}>
+            {tts.setup_hint ??
+              "Install a local TTS engine and point TTS_EXECUTABLE_PATH at it (see README, Phase 6 — first-run setup). Voices are never downloaded automatically."}
+          </p>
+        </div>
+      )}
+      {engineReady && !voiceReady && (
+        <div className="warn-box">
+          <strong>No {LANGUAGE_LABEL[language] ?? language} voice configured</strong>
+          <p style={{ margin: "6px 0 0" }}>
+            {voice?.note ??
+              "Add a voice for this language to the TTS voice settings (see README, Phase 6 — voice setup) before generating narration."}
+          </p>
+        </div>
+      )}
+
+      <button
+        type="button"
+        className="btn btn-primary mt-12"
+        onClick={onStartNarration}
+        disabled={busy || !engineReady || !voiceReady}
+      >
+        {busy ? "Queuing…" : "Generate narration"}
+      </button>
+      <p className="hint" style={{ marginTop: 8, marginBottom: 0 }}>
+        Runs the Phase 6 worker: script segmentation, per-segment local TTS, actual
+        audio measurement, timeline + SRT/VTT subtitles, assembly and QC — all on this
+        PC. Changing the language or duration regenerates the explanation first.
+      </p>
+    </div>
+  );
+}
+
+function NarrationProgress({
+  project,
+  narrationRun,
+  language,
+}: {
+  project: Project;
+  narrationRun: NarrationRun | null;
+  language: Language;
+}) {
+  return (
+    <div
+      className="upload-progress mt-12"
+      role="progressbar"
+      aria-valuenow={Math.round(project.progress)}
+    >
+      <div className="flex-between">
+        <strong>
+          Generating {LANGUAGE_LABEL[language] ?? language} narration…
+        </strong>
+        <span className="muted">{Math.round(project.progress)}%</span>
+      </div>
+      <span className="progress-track">
+        <i style={{ width: `${project.progress}%` }} />
+      </span>
+      <p className="hint">
+        {narrationRun?.current_stage ?? "Working"} — segmenting the script,
+        synthesizing each segment with the local TTS engine, measuring real audio
+        durations, then building the timeline, subtitles and QC, one segment at a
+        time on the single worker.
+      </p>
+    </div>
+  );
+}
+
+function NarrationPreview({
+  project,
+  narrationRun,
+  manifest,
+  timeline,
+  srt,
+  tts,
+  busy,
+  language,
+  onStartNarration,
+}: {
+  project: Project;
+  narrationRun: NarrationRun | null;
+  manifest: NarrationManifestDocument | null;
+  timeline: NarrationTimelineDocument | null;
+  srt: string | null;
+  tts: TtsInfo;
+  busy: boolean;
+  language: Language;
+  onStartNarration: () => void;
+}) {
+  const cues = srt ? parseSrt(srt) : [];
+  const segments = timeline?.segments ?? [];
+  const engineReady = Boolean(tts?.available);
+  const voice = voiceForLanguage(tts, language);
+  const voiceReady = engineReady && Boolean(voice?.available);
+
+  const summaryRows = [
+    {
+      label: "Language",
+      value: manifest
+        ? LANGUAGE_LABEL[manifest.generation.language]
+        : LANGUAGE_LABEL[language],
+    },
+    {
+      label: "Voice",
+      value:
+        manifest?.generation.voice ??
+        manifest?.generation.voice_id ??
+        narrationRun?.voice_id ??
+        "—",
+    },
+    {
+      label: "TTS provider",
+      value:
+        manifest?.generation.provider ??
+        narrationRun?.provider ??
+        tts?.provider ??
+        "—",
+    },
+    {
+      label: "Format",
+      value:
+        manifest
+          ? `${manifest.generation.sample_rate} Hz · ${manifest.generation.channels} ch`
+          : tts?.settings.sample_rate
+            ? `${tts.settings.sample_rate} Hz mono`
+            : "—",
+    },
+    {
+      label: "Narration length",
+      value: clockMs(
+        manifest?.generation.duration_ms ?? narrationRun?.duration_ms,
+      ),
+    },
+    {
+      label: "Segments",
+      value: String(
+        manifest?.generation.segment_count ?? narrationRun?.segment_count ?? "—",
+      ),
+    },
+    {
+      label: "Quality score",
+      value:
+        manifest?.results.quality_score != null
+          ? `${manifest.results.quality_score} / 100`
+          : "—",
+    },
+    {
+      label: "Completed",
+      value: narrationRun?.completed_at
+        ? formatWhen(narrationRun.completed_at)
+        : "—",
+    },
+  ];
+
+  const scoreLabels: { key: keyof NarrationManifestDocument["results"]["scores"]; label: string }[] = [
+    { key: "audio_score", label: "audio" },
+    { key: "timeline_score", label: "timeline" },
+    { key: "subtitle_score", label: "subtitles" },
+    { key: "mapping_score", label: "scene mapping" },
+    { key: "duration_consistency_score", label: "duration" },
+  ];
+
+  return (
+    <div className="script-panel mt-12">
+      <h3 className="panel-title">Narration ready</h3>
+      <div className="kv-grid">
+        {summaryRows.map((row) => (
+          <div className="kv" key={row.label}>
+            <span className="kv-key">{row.label}</span>
+            <span className="kv-value" title={row.value}>
+              {row.value}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <h3 className="panel-title">Audio</h3>
+      <audio
+        className="audio-player"
+        controls
+        preload="metadata"
+        src={narrationAudioUrl(project.id)}
+      >
+        Your browser does not support the audio element.
+      </audio>
+      <div className="link-row">
+        <a className="btn btn-sm" href={narrationAudioUrl(project.id)} download="narration.wav">
+          Download WAV
+        </a>
+        <a
+          className="btn btn-sm"
+          href={narrationSubtitlesUrl(project.id, "srt")}
+          download="subtitles.srt"
+        >
+          Download SRT
+        </a>
+        <a
+          className="btn btn-sm"
+          href={narrationSubtitlesUrl(project.id, "vtt")}
+          download="subtitles.vtt"
+        >
+          Download VTT
+        </a>
+      </div>
+
+      <h3 className="panel-title">Subtitles (synced to the real audio)</h3>
+      {srt ? (
+        cues.length > 0 ? (
+          <div className="sub-preview">
+            {cues.map((cue) => (
+              <div className="sub-cue" key={cue.index}>
+                <span className="sub-time">
+                  {cue.start} → {cue.end}
+                </span>
+                <span className="sub-text">{cue.text}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted" style={{ marginTop: 6 }}>
+            Subtitle file exists but no cues could be parsed.
+          </p>
+        )
+      ) : (
+        <p className="muted" style={{ marginTop: 6 }}>
+          Subtitle preview unavailable.
+        </p>
+      )}
+
+      {manifest && (
+        <>
+          <h3 className="panel-title">Quality check</h3>
+          <div className="quality-checks">
+            {scoreLabels.map((item) => (
+              <span key={item.key} className="quality-chip ok">
+                {item.label} {manifest.results.scores[item.key]}
+              </span>
+            ))}
+          </div>
+          {manifest.warnings.length > 0 && (
+            <div className="warn-box">
+              <strong>Warnings</strong>
+              <ul>
+                {manifest.warnings.map((warning, index) => (
+                  <li key={index}>{warning}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+
+      {segments.length > 0 && (
+        <>
+          <h3 className="panel-title">Narration segments → scenes</h3>
+          <div className="seg-scroll">
+            {segments.map((segment) => (
+              <div className="seg-row" key={segment.segment_id}>
+                <span className="seg-id">
+                  #{String(segment.segment_id).padStart(2, "0")}
+                </span>
+                <span className="seg-time muted">
+                  {clockMs(segment.start_ms)} → {clockMs(segment.end_ms)}
+                </span>
+                <span className="seg-section">
+                  {segment.section.replace(/_/g, " ")}
+                </span>
+                {segment.scene_ids.map((sceneId) => (
+                  <span className="tag tag-budget" key={sceneId}>
+                    scene {sceneId}
+                  </span>
+                ))}
+                <span className="seg-text" title={segment.text}>
+                  {segment.text}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {tts != null && !engineReady && (
+        <div className="warn-box">
+          <strong>Local TTS engine not ready</strong>
+          <p style={{ margin: "6px 0 0" }}>
+            {tts.setup_hint ??
+              "Install a local TTS engine and configure TTS_EXECUTABLE_PATH to regenerate (see README, Phase 6)."}
+          </p>
+        </div>
+      )}
+      {engineReady && !voiceReady && (
+        <div className="warn-box">
+          <strong>No {LANGUAGE_LABEL[language] ?? language} voice configured</strong>
+          <p style={{ margin: "6px 0 0" }}>
+            {voice?.note ??
+              "Configure a voice for this language before regenerating narration."}
+          </p>
+        </div>
+      )}
+
+      <div className="field mt-12" style={{ marginBottom: 8 }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={onStartNarration}
+          disabled={busy || !engineReady || !voiceReady}
+        >
+          {busy ? "Queuing…" : "Regenerate narration"}
+        </button>
+      </div>
+      <p className="hint" style={{ margin: 0 }}>
+        Regeneration keeps the current script and voice. To narrate in another
+        language or at another length, change the language/duration above and
+        regenerate the explanation — the narration is then synthesized for the
+        new script.
       </p>
     </div>
   );

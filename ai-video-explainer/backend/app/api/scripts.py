@@ -128,7 +128,14 @@ def generate_script(
                 )
             status = row["status"]
 
-        if status not in (ProjectStatus.ANALYZED.value, ProjectStatus.SCRIPT_READY.value):
+        # NARRATION_READY is allowed too: regenerating the script (e.g. a
+        # different language/duration) replaces the existing narration, so
+        # Phase 6 artifacts are cleaned below before the new run is queued.
+        if status not in (
+            ProjectStatus.ANALYZED.value,
+            ProjectStatus.SCRIPT_READY.value,
+            ProjectStatus.NARRATION_READY.value,
+        ):
             raise ScriptNotReadyError(
                 "This project cannot generate a script: its status is "
                 f"'{status}'. Run analysis first so the project becomes "

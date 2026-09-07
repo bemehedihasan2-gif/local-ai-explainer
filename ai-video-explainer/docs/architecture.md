@@ -15,7 +15,7 @@ video is being read, no full video is ever held in RAM, heavy work is
 file/stream based, and only **one heavy processing job runs at a time**
 (`PROCESSING_CONCURRENCY=1`, enforced by design + future worker).
 
-## 2. Current Phase 5 architecture
+## 2. Current architecture (Phases 1-6)
 
 ```
 frontend (React/Vite/TS)                  backend (FastAPI, Python 3)
@@ -243,7 +243,7 @@ Video Upload ──▶ Preprocessing ──▶ Scene Detection ──▶ Speech-
                         Quality Control (duration, audio level, subtitle sync)
 ```
 
-### Stage ownership & service interfaces (Phase 5: through script real, TTS/render stubbed)
+### Stage ownership & service interfaces (Phase 6: through narration real, mixing/render stubbed)
 
 | # | Stage                  | Service class (module)          | Planned | Local/zero-cost approach |
 |---|------------------------|----------------------------------|---------|-------------------------------------------------------|
@@ -260,16 +260,15 @@ Video Upload ──▶ Preprocessing ──▶ Scene Detection ──▶ Speech-
 | 11 | Duration selection    | `services/duration_planning.py`  | P5 ✅   | Word budgets (250-300/375-450/500-600) allocated before writing; script plan (hook/sections/ending) |
 | 12 | Script generation     | `ai/script.py`                   | P5 ✅   | Same local LLM, prompted per section + language + content-type style |
 | 13 | Script quality        | `services/script_quality.py`     | P5 ✅   | Deterministic checks + documented 0-100 score |
-| 14 | TTS                    | `ai/tts.py`                      | P6      | Local neural TTS with en/hi/bn voices |
-| 15 | Subtitle generation    | `ai/subtitles.py`                | P6      | Sentence→timestamp mapping from TTS audio → SRT |
-| 16 | Audio mixing           | (added P6)                       | P6      | FFmpeg amix/volume ducking, streamed |
-| 17 | FFmpeg rendering       | `video/renderer.py`              | P6      | FFmpeg filter graph, memory-bounded encode |
-| 18 | Quality control        | (added P6)                       | P6      | Re-probe duration/audio/ocr subtitle spot check |
-| 11 | TTS                    | `ai/tts.py`                      | P5      | Local neural TTS with en/hi/bn voices |
-| 12 | Subtitle generation    | `ai/subtitles.py`                | P5      | Sentence→timestamp mapping from TTS audio → SRT |
-| 13 | Audio mixing           | (added P6)                       | P6      | FFmpeg amix/volume ducking, streamed |
-| 14 | FFmpeg rendering       | `video/renderer.py`              | P6      | FFmpeg filter graph, memory-bounded encode |
-| 15 | Quality control        | (added P6)                       | P6      | Re-probe duration/audio/ocr subtitle spot check |
+| 14 | TTS provider           | `ai/tts.py`                      | P6 ✅   | Piper CLI subprocess per segment (en/hi/bn voices; arg arrays, no shell, hard timeout); voice registry + availability |
+| 15 | Subtitle generation    | `services/subtitles.py`          | P6 ✅   | SRT/VTT timed to the **actual measured TTS audio**; UTF-8, readable caption limits |
+| 16 | Script segmentation    | `services/segmentation.py`       | P6 ✅   | Language-aware sentence units keep the Phase 5 scene/section mapping |
+| 17 | Narration timeline     | `services/narration.py`          | P6 ✅   | start/end ms from real WAV durations + configured gaps (scene ids preserved) |
+| 18 | Audio assembly         | `services/narration_audio.py`    | P6 ✅   | ffmpeg concat → mono WAV; gentle normalization (target dB, no clipping) |
+| 19 | Narration QC           | `services/narration_qc.py`       | P6 ✅   | Deterministic audio/timeline/subtitle/mapping checks + documented 0-100 score |
+| 20 | Audio mixing           | (added P7)                       | P7      | FFmpeg amix/volume ducking, streamed |
+| 21 | FFmpeg rendering       | `video/renderer.py`              | P7      | FFmpeg filter graph, memory-bounded encode |
+| 22 | Final quality control  | (added P7)                       | P7      | Re-probe duration/audio/subtitle spot check on the rendered MP4 |
 
 AI stage classes extend `PipelineService` (`ai/base.py`) and are registered
 in `ai/registry.py`. The remaining stubbed stages **raise a controlled
@@ -277,19 +276,21 @@ not-implemented error** — the orchestrator runs them uniformly later; the
 API never pretends work happened. Stages 3-7 are *real* since Phase 4 and
 degrade gracefully per-stage (missing models/binary → warning, not failure).
 
-### Orchestration (Phase 5: live for preprocessing + analysis + script)
+### Orchestration (Phase 6: live for preprocessing + analysis + script + narration)
 
 - `services/worker.py` is a **single daemon thread** with a FIFO queue — no
   multiprocessing on the 8 GB target. Jobs are persisted in SQLite *before*
   submission; the worker only transitions persisted states.
 - Per stage: `job: queued → running (progress%) → completed|failed`;
   `projects.status/progress` mirrors the aggregate; `error_message` captures
-  failures; `analysis_results` / `script_runs` mirror per-run stage +
-  summary. The worker never dies: unexpected exceptions are logged and the
+  failures; `analysis_results` / `script_runs` / `tts_runs` mirror
+  per-run stage + summary. The worker never dies: unexpected exceptions are
+  logged and the
   job is failed cleanly (project/job rows deleted mid-run are dropped
   silently).
-- `PipelineStage` values (`preprocess`, `analysis`, `script_generation`)
-  dispatch into the same queue, one stage per job — later phases plug more
+- `PipelineStage` values (`preprocess`, `analysis`, `script_generation`,
+  `narration_generation`) dispatch into the same queue, one stage per job —
+  later phases plug more
   values unchanged. FFmpeg is only required for the video stages; the LLM
   stage runs on JSON + frames alone.
 - Phase 4 idempotency: config + preprocessing fingerprints per run;
@@ -297,11 +298,15 @@ degrade gracefully per-stage (missing models/binary → warning, not failure).
   **generation fingerprint** (analysis identity + language + target
   duration + model identity + prompt/planner versions + narration
   settings); matching completed run + valid artifacts → idempotent reuse.
-  Stale `analyzing`/`scripting` projects (crash) auto-recover to
-  `prepared`/`analyzed` on the next call.
+  Phase 6 adds a **narration fingerprint** (script fingerprint + language +
+  voice + provider/version + TTS/subtitle settings); matching completed run
+  + valid audio/subtitle files → idempotent reuse.
+  Stale `analyzing`/`scripting`/`narrating` projects (crash) auto-recover
+  to `prepared`/`analyzed`/`script_ready` on the next call.
 - Failure policy: preprocess → READY (assets gone); analysis → PREPARED
   (Phase 4 artifacts cleared, Phase 3 kept); script → ANALYZED (Phase 5
-  artifacts cleared, Phase 3/4 kept).
+  artifacts cleared, Phase 3/4 kept); narration → SCRIPT_READY (Phase 6
+  artifacts cleared, Phase 3-5 kept).
 - Cleanup utilities (`services/cleanup.py`) sweep stale `temp/` files after
   crashes so disk never fills; failed jobs remove partial artifacts.
 
@@ -316,10 +321,10 @@ degrade gracefully per-stage (missing models/binary → warning, not failure).
 
 ## 5. API surface (stable for later phases)
 
-| Method | Endpoint                  | Behavior (Phase 4)                                  |
+| Method | Endpoint                  | Behavior (Phase 6)                                  |
 | ------ | ------------------------- | --------------------------------------------------- |
 | GET    | `/api/health`             | liveness                                            |
-| GET    | `/api/system/status`      | python/ffmpeg/sqlite/storage/db + limits + worker + **analysis deps** + **LLM report** (provider, available, model_name basename, threads, ctx), `phase: "5"` |
+| GET    | `/api/system/status`      | python/ffmpeg/sqlite/storage/db + limits + worker + **analysis deps** + **LLM report** (provider, available, model_name basename, threads, ctx) + **TTS report** (provider, executable, per-language voices — basenames only), `phase: "6"` |
 | GET    | `/api/projects`           | list (metadata + asset refs included)               |
 | GET    | `/api/projects/{id}`      | one project + status/progress (404 on unknown id)   |
 | POST   | `/api/projects/upload`    | **multipart upload** → streams, validates, 201 READY |
@@ -335,6 +340,12 @@ degrade gracefully per-stage (missing models/binary → warning, not failure).
 | GET    | `/api/projects/{id}/duration-plan` | per-scene word budgets + targets (404 until generated) |
 | GET    | `/api/projects/{id}/script` | narration script JSON (404 until generated)         |
 | GET    | `/api/projects/{id}/script-quality` | deterministic QC report 0-100 (404 until generated) |
+| POST   | `/api/projects/{id}/generate-narration` | **queue Phase 6 narration** (JSON `language`, optional `voice_id`; idempotent reuse; 503 when TTS/voice unavailable) |
+| GET    | `/api/projects/{id}/narration-status` | latest narration-run summary + live stage (404 until started) |
+| GET    | `/api/projects/{id}/narration` | narration manifest JSON (relative paths only; 404 until generated) |
+| GET    | `/api/projects/{id}/narration/audio` | assembled narration WAV stream (404 until generated) |
+| GET    | `/api/projects/{id}/narration/subtitles` | SRT or VTT text (`?format=srt|vtt`; 404 until generated) |
+| GET    | `/api/projects/{id}/narration/segments` | segment timeline JSON (text, scene ids, real ms times) |
 | GET    | `/api/projects/{id}/jobs` | job history (stage/status/progress/error)           |
 | GET    | `/api/projects/{id}/thumbnail` | poster JPEG (404 until PREPARED)               |
 | POST   | `/api/projects`           | create empty record (legacy)                        |
@@ -345,9 +356,11 @@ degrade gracefully per-stage (missing models/binary → warning, not failure).
 internal filesystem paths (asset paths are relative only; the LLM report
 only exposes the model file's *basename*).
 
-Phase 5 statuses: `analyzed → scripting → script_ready` (failure returns to
-`analyzed`). The UI polls `GET /api/projects/{id}` + `/story-status` for
-reactive progress with honest stage labels.
+Phase statuses: `analyzed → scripting → script_ready → narrating →
+narration_ready` (failure at each stage returns to `analyzed` /
+`script_ready` with the failed run recorded and its partial artifacts
+removed). The UI polls `GET /api/projects/{id}` + `/story-status` +
+`/narration-status` for reactive progress with honest stage labels.
 
 ## 6. Configuration & security model
 
@@ -369,8 +382,12 @@ reactive progress with honest stage labels.
 - **Phase 4 ✅** on-device analysis: scene detection + frames,
   faster-whisper STT, Tesseract OCR, deterministic visual metadata, timeline
   alignment + context aggregation → ANALYZED (graceful per-stage absence).
-- **Phase 5 ✅ (this phase)** story understanding (small local LLM, llama.cpp
-  + Q4 GGUF, hierarchical batches), important-scene selection, duration-aware
-  script generation (en/hi/bn, 2/3/4 min) + deterministic QC → SCRIPT_READY.
-- **Phase 6** TTS narration, subtitle sync, audio mixing, FFmpeg rendering,
-  quality control, queue hardening, cleanup + UX polish.
+- **Phase 5 ✅** story understanding (small local LLM, llama.cpp + Q4 GGUF,
+  hierarchical batches), important-scene selection, duration-aware script
+  generation (en/hi/bn, 2/3/4 min) + deterministic QC → SCRIPT_READY.
+- **Phase 6 ✅ (this phase)** local TTS narration (Piper CLI + en/hi/bn
+  voices, explicit download only), real-audio segment timing, SRT/VTT
+  subtitles, WAV assembly + normalization, deterministic narration QC →
+  NARRATION_READY.
+- **Phase 7** mix narration with the original audio, render the final MP4
+  (FFmpeg), final QC and polish.
