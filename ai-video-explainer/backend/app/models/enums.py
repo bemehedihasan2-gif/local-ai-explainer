@@ -44,9 +44,11 @@ class ProjectStatus(str, Enum):
     SCRIPT_READY = "script_ready"  # story/selection/plan/script/QC stored (Phase 5 done)
     NARRATING = "narrating"  # Phase 6 worker is synthesizing narration audio
     NARRATION_READY = "narration_ready"  # narration.wav + SRT + manifest stored (Phase 6 done)
-    QUEUED = "queued"  # future pipeline stages (Phase 7+)
+    RENDERING = "rendering"  # Phase 7 worker is mixing + rendering the final MP4
+    RENDER_FAILED = "render_failed"  # final render failed; retry from NARRATION_READY
+    COMPLETED = "completed"  # final MP4 rendered + QC-passed (Phase 7 done)
+    QUEUED = "queued"  # reserved
     PROCESSING = "processing"
-    COMPLETED = "completed"
     FAILED = "failed"
 
 
@@ -75,6 +77,7 @@ class PipelineStage(str, Enum):
     SUBTITLE_GENERATION = "subtitle_generation"
     AUDIO_MIXING = "audio_mixing"
     VIDEO_RENDER = "video_render"
+    FINAL_RENDER = "final_render"  # Phase 7 composite job: plan->mix->burn->encode->QC
     QUALITY_CONTROL = "quality_control"
 
     @property

@@ -38,9 +38,11 @@ export type ProjectStatus =
   | "script_ready"
   | "narrating"
   | "narration_ready"
+  | "rendering"
+  | "render_failed"
+  | "completed"
   | "queued"
   | "processing"
-  | "completed"
   | "failed";
 
 export interface Project {
@@ -186,6 +188,26 @@ export interface GenerateNarrationResponse {
   message?: string;
 }
 
+// Phase 7: the output video plan served by /render-plan.
+export interface RenderPlanDocument {
+  schema_version: number;
+  narration_duration_ms: number;
+  video_duration_ms: number;
+  subtitle_aligned: boolean;
+  scene_count: number;
+  clips: {
+    mode: string;
+    scene_id: number;
+    source_start_ms: number;
+    source_end_ms: number;
+    output_start_ms: number;
+    output_end_ms: number;
+    hold_ms: number;
+    importance_score: number;
+  }[];
+  warnings: string[];
+}
+
 export interface NarrationTimelineDocument {
   schema_version: number;
   sample_rate: number;
@@ -204,6 +226,64 @@ export interface NarrationTimelineDocument {
     duration_ms: number;
     audio_path: string;
   }[];
+}
+
+// Phase 7: one final render run per project - summary only. The video
+// itself is streamed from the dedicated /render/video endpoint.
+export interface RenderRun {
+  id: string;
+  project_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  current_stage: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  language: Language;
+  output_path: string | null;
+  output_duration_ms: number | null;
+  output_width: number | null;
+  output_height: number | null;
+  output_fps: number | null;
+  output_size_bytes: number | null;
+  qc_score: number | null;
+  subtitle_status: string | null;
+  error_message: string | null;
+  warnings: string[];
+}
+
+export interface StartRenderResponse {
+  idempotent: boolean;
+  status: string;
+  render_run_id?: string;
+  job?: Job;
+  render_run?: RenderRun;
+  message?: string;
+}
+
+export interface RenderManifestDocument {
+  schema_version: number;
+  project_id: string;
+  created_at: string;
+  source: { sha256: string | null; original_filename: string | null };
+  fingerprints: { narration: string; render: string };
+  generation: {
+    language: Language;
+    requested_duration_seconds: number;
+    narration_duration_ms: number;
+    final_duration_ms: number;
+  };
+  media: {
+    path: string;
+    duration_ms: number;
+    width: number | null;
+    height: number | null;
+    fps: number | null;
+    size_bytes: number;
+    video_codec: string | null;
+    audio_codec: string | null;
+  };
+  subtitles: { burned: boolean; sidecar_srt: string | null };
+  quality: { quality_score: number; scores: Record<string, number> };
+  warnings: string[];
 }
 
 export interface NarrationManifestDocument {
@@ -529,6 +609,19 @@ export interface SystemStatus {
     }[];
     setup_hint: string | null;
     settings: { sample_rate: number; channels: number; timeout_seconds: number };
+    note: string;
+  };
+  render: {
+    enabled: boolean;
+    codec: string;
+    preset: string;
+    crf: number;
+    output_max: [number, number];
+    output_fps: number | string;
+    subtitle_burn: boolean;
+    subtitle_font_configured: boolean;
+    original_audio: boolean;
+    ducking: boolean;
     note: string;
   };
   phase: string;

@@ -27,6 +27,7 @@ from app.database.connection import Database
 from app.database.repositories.analysis import AnalysisRepository
 from app.database.repositories.jobs import JobRepository
 from app.database.repositories.projects import ProjectRepository
+from app.database.repositories.render_runs import RenderRepository
 from app.database.repositories.scripts import ScriptRepository
 from app.database.repositories.tts_runs import TtsRepository
 from app.models.enums import JobStatus, PipelineStage, ProjectStatus
@@ -34,6 +35,7 @@ from app.services.analysis import AnalysisService, _STAGE_LABELS
 from app.services.ffmpeg import FfmpegService
 from app.services.narration import NarrationService, _STAGE_LABELS as _TTS_STAGE_LABELS
 from app.services.preprocess import PreprocessService
+from app.services.render import RenderService, _STAGE_LABELS as _RENDER_STAGE_LABELS
 from app.services.storage import StorageService
 from app.services.story import StoryService, _STAGE_LABELS as _SCRIPT_STAGE_LABELS
 from app.utils.errors import ExplainerError, ProjectNotFoundError
@@ -167,6 +169,13 @@ class ProcessingWorker:
                 elif job["stage"] == PipelineStage.TEXT_TO_SPEECH.value:
                     # No FFmpeg needed: narration is synthesized per segment.
                     self._run_narration(projects, jobs, project_id, job_id, project)
+                elif job["stage"] == PipelineStage.FINAL_RENDER.value:
+                    ffmpeg_status = self._ffmpeg.require()
+                    self._run_render(
+                        projects, jobs, project_id, job_id, project,
+                        str(ffmpeg_status.ffmpeg_path),
+                        str(ffmpeg_status.ffprobe_path),
+                    )
                 else:  # pragma: no cover - future stages not wired yet
                     raise ExplainerError(
                         f"Pipeline stage '{job['stage']}' is not implemented yet."
@@ -406,6 +415,77 @@ class ProcessingWorker:
             summary.get("quality_score"),
         )
 
+    def _run_render(
+        self, projects, jobs, project_id, job_id, project, ffmpeg_path, ffprobe_path,
+    ) -> None:
+        render_repo = RenderRepository(self._db)
+        run = render_repo.latest_for_project(project_id)
+        run_id = run["id"] if run and run["status"] in ("queued", "running") else None
+        if run_id:
+            render_repo.update(
+                run_id,
+                status="running",
+                started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+        service = RenderService(self._settings, self._storage)
+
+        def tick(progress: float, stage: str | None = None) -> None:
+            jobs.update_progress(job_id, progress)
+            projects.update(project_id, progress=progress)
+            if run_id and stage:
+                render_repo.update(
+                    run_id,
+                    current_stage=_RENDER_STAGE_LABELS.get(stage, stage),
+                )
+
+        summary = service.run(
+            project,
+            language=run["language"] if run else project.get("language", "en"),
+            narration_fingerprint=(
+                run["narration_fingerprint"] if run else None
+            ),
+            render_fingerprint=(
+                run["render_fingerprint"] if run else None
+            ),
+            ffmpeg_path=ffmpeg_path,
+            ffprobe_path=ffprobe_path,
+            progress_callback=tick,
+        )
+        try:
+            projects.update(
+                project_id,
+                status=ProjectStatus.COMPLETED,
+                progress=100.0,
+                error_message=None,
+            )
+            if run_id:
+                render_repo.update(
+                    run_id,
+                    status="completed",
+                    current_stage=None,
+                    completed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    output_path=summary.get("output_path"),
+                    output_duration_ms=summary.get("output_duration_ms"),
+                    output_width=summary.get("output_width"),
+                    output_height=summary.get("output_height"),
+                    output_fps=summary.get("output_fps"),
+                    output_size_bytes=summary.get("output_size_bytes"),
+                    qc_score=summary.get("qc_score"),
+                    subtitle_status=summary.get("subtitle_status"),
+                    warnings=summary.get("warnings", []),
+                )
+            jobs.update_status(job_id, status=JobStatus.COMPLETED, progress=100.0)
+        except ProjectNotFoundError:
+            logger.info(
+                "Project %s was deleted during job %s; dropping result.",
+                project_id, job_id,
+            )
+            return
+        logger.info(
+            "Job %s completed; project %s COMPLETED (QC=%s).",
+            job_id, project_id, summary.get("qc_score"),
+        )
+
     def _fail(
         self,
         projects: ProjectRepository,
@@ -428,6 +508,8 @@ class ProcessingWorker:
         return_status = (
             ProjectStatus.READY if stage == PipelineStage.PREPROCESS.value
             else ProjectStatus.PREPARED if stage == PipelineStage.ANALYSIS.value
+            else ProjectStatus.RENDER_FAILED
+            if stage == PipelineStage.FINAL_RENDER.value
             else ProjectStatus.SCRIPT_READY
             if stage == PipelineStage.TEXT_TO_SPEECH.value
             else ProjectStatus.ANALYZED
@@ -472,6 +554,17 @@ class ProcessingWorker:
                 run = TtsRepository(self._db).latest_for_project(project_id)
                 if run and run["status"] in ("queued", "running"):
                     TtsRepository(self._db).update(
+                        run["id"],
+                        status="failed",
+                        current_stage=None,
+                        completed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        error_message=message,
+                    )
+            if stage == PipelineStage.FINAL_RENDER.value:
+                RenderService(self._settings, self._storage).cleanup_artifacts(project_id)
+                run = RenderRepository(self._db).latest_for_project(project_id)
+                if run and run["status"] in ("queued", "running"):
+                    RenderRepository(self._db).update(
                         run["id"],
                         status="failed",
                         current_stage=None,

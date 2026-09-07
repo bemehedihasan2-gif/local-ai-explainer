@@ -8,11 +8,15 @@ import type {
   GenerateScriptResponse,
   Job,
   Language,
+  StartRenderResponse,
   NarrationManifestDocument,
   NarrationRun,
   NarrationTimelineDocument,
   Project,
   ProjectStatus,
+  RenderManifestDocument,
+  RenderPlanDocument,
+  RenderRun,
   ScriptDocument,
   ScriptQualityDocument,
   ScriptRun,
@@ -150,6 +154,8 @@ export const api = {
   getAnalysis: (id: string) => request<AnalysisRun>(`/api/projects/${id}/analysis`),
   getTimeline: (id: string) =>
     request<TimelineDocument>(`/api/projects/${id}/timeline`),
+  getRenderPlan: (id: string) =>
+    request<RenderPlanDocument>(`/api/projects/${id}/render-plan`),
   generateScript: (
     id: string,
     payload: { language: Language; target_duration_seconds: number },
@@ -181,6 +187,15 @@ export const api = {
     request<NarrationManifestDocument>(`/api/projects/${id}/narration`),
   getNarrationTimeline: (id: string) =>
     request<NarrationTimelineDocument>(`/api/projects/${id}/narration/segments`),
+  startRender: (id: string) =>
+    request<StartRenderResponse>(`/api/projects/${id}/render`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  getRenderStatus: (id: string) =>
+    request<RenderRun>(`/api/projects/${id}/render-status`),
+  getRenderManifest: (id: string) =>
+    request<RenderManifestDocument>(`/api/projects/${id}/render`),
   narrationSubtitlesText: (id: string, format: "srt" | "vtt" = "srt") =>
     fetch(`${BASE}/api/projects/${id}/narration/subtitles?format=${format}`).then(
       async (response) => {
@@ -210,6 +225,16 @@ export function narrationAudioUrl(projectId: string): string {
 }
 
 /** Browser URL of the subtitles (SRT by default, VTT via format). */
+/** Browser URL of the final rendered video (Phase 7). */
+export function renderVideoUrl(projectId: string): string {
+  return `${BASE}/api/projects/${projectId}/render/video`;
+}
+
+/** Browser URL of the final subtitles sidecar (SRT/VTT). */
+export function renderSubtitlesUrl(projectId: string, format: "srt" | "vtt" = "srt"): string {
+  return `${BASE}/api/projects/${projectId}/render/subtitles?format=${format}`;
+}
+
 export function narrationSubtitlesUrl(projectId: string, format: "srt" | "vtt" = "srt"): string {
   return `${BASE}/api/projects/${projectId}/narration/subtitles?format=${format}`;
 }

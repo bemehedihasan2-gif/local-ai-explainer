@@ -11,6 +11,8 @@ import {
   ApiError,
   narrationAudioUrl,
   narrationSubtitlesUrl,
+  renderSubtitlesUrl,
+  renderVideoUrl,
   thumbnailUrl,
   uploadVideo,
 } from "./api";
@@ -26,6 +28,8 @@ import {
   type NarrationRun,
   type NarrationTimelineDocument,
   type Project,
+  type RenderManifestDocument,
+  type RenderRun,
   type ScriptDocument,
   type ScriptQualityDocument,
   type ScriptRun,
@@ -58,9 +62,11 @@ const STATUS_LABEL: Record<string, string> = {
   script_ready: "Script ready",
   narrating: "Generating narration",
   narration_ready: "Narration ready",
+  rendering: "Rendering final video",
+  render_failed: "Render failed",
+  completed: "Completed",
   queued: "Queued",
   processing: "Processing",
-  completed: "Completed",
   failed: "Failed",
 };
 
@@ -200,6 +206,9 @@ export default function App() {
   const [narrationTimeline, setNarrationTimeline] =
     useState<NarrationTimelineDocument | null>(null);
   const [narrationSrt, setNarrationSrt] = useState<string | null>(null);
+  const [renderRun, setRenderRun] = useState<RenderRun | null>(null);
+  const [renderManifest, setRenderManifest] =
+    useState<RenderManifestDocument | null>(null);
 
   const [busyDelete, setBusyDelete] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -403,6 +412,36 @@ export default function App() {
     }
   };
 
+  /* ---- Phase 7 final render --------------------------------------- */
+
+  const [renderBusy, setRenderBusy] = useState(false);
+
+  const startRender = async (project: Project) => {
+    setRenderBusy(true);
+    setNotice(null);
+    try {
+      const response = await api.startRender(project.id);
+      if (response.idempotent) {
+        setNotice({
+          kind: "info",
+          title: "Final video already ready",
+          body: response.message ?? "Existing final video is still valid; nothing was re-encoded.",
+        });
+      }
+      setView(await api.getProject(project.id)); // -> rendering (or completed)
+      setProjects(await api.listProjects());
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : String(err);
+      setNotice({
+        kind: "error",
+        title: "Could not start rendering",
+        body: message,
+      });
+    } finally {
+      setRenderBusy(false);
+    }
+  };
+
   /* ---- Phase 3 preprocessing -------------------------------------- */
 
   const [prepBusy, setPrepBusy] = useState(false);
@@ -463,7 +502,8 @@ export default function App() {
       p.status === "preprocessing" ||
       p.status === "analyzing" ||
       p.status === "scripting" ||
-      p.status === "narrating",
+      p.status === "narrating" ||
+      p.status === "rendering",
   );
   useEffect(() => {
     const activeView =
@@ -471,7 +511,8 @@ export default function App() {
       (view.status === "preprocessing" ||
         view.status === "analyzing" ||
         view.status === "scripting" ||
-        view.status === "narrating");
+        view.status === "narrating" ||
+        view.status === "rendering");
     if (!anyProcessing && !activeView) return;
     const timer = window.setInterval(() => {
       void (async () => {
@@ -501,6 +542,15 @@ export default function App() {
               // assembling, QC, ...).
               try {
                 setNarrationRun(await api.getNarrationStatus(fresh.id));
+              } catch {
+                // run row may not be visible yet; next tick retries
+              }
+            }
+            if (fresh.status === "rendering") {
+              // Live stage label (extracting clips, mixing, burning,
+              // encoding, validating, ...).
+              try {
+                setRenderRun(await api.getRenderStatus(fresh.id));
               } catch {
                 // run row may not be visible yet; next tick retries
               }
@@ -585,6 +635,39 @@ export default function App() {
       cancelled = true;
     };
   }, [analyzedId, view?.status]);
+
+  // When a project reaches NARRATION_READY, load its audio/subtitle assets;
+  // when it reaches RENDERING/RENDER_FAILED/COMPLETED, load render state.
+  const renderStateId =
+    view &&
+    (view.status === "rendering" ||
+      view.status === "render_failed" ||
+      view.status === "completed")
+      ? view.id
+      : null;
+  useEffect(() => {
+    if (!renderStateId) {
+      setRenderRun(null);
+      setRenderManifest(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const run = await api.getRenderStatus(renderStateId);
+        if (cancelled) return;
+        setRenderRun(run);
+        if (view?.status === "completed") {
+          setRenderManifest(await api.getRenderManifest(renderStateId));
+        }
+      } catch {
+        // Run row may not be visible yet; next tick retries (polling).
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [renderStateId, view?.status]);
 
   // When a project reaches NARRATION_READY, load its audio/subtitle assets.
   const narrationReadyId =
@@ -870,10 +953,15 @@ export default function App() {
                   narrationSrt={narrationSrt}
                   narrationBusy={narrationBusy}
                   tts={system?.tts ?? null}
+                  renderRun={renderRun}
+                  renderManifest={renderManifest}
+                  renderBusy={renderBusy}
+                  renderConfig={system?.render ?? null}
                   onStartPreprocess={() => void startPreprocess(view)}
                   onStartAnalysis={() => void startAnalysis(view)}
                   onGenerate={() => void startScript(view)}
                   onStartNarration={() => void startNarration(view)}
+                  onStartRender={() => void startRender(view)}
                   onScriptLanguage={setScriptLanguage}
                   onScriptDuration={setScriptDuration}
                 />
@@ -1022,10 +1110,15 @@ function ProjectCard({
   narrationSrt,
   narrationBusy,
   tts,
+  renderRun,
+  renderManifest,
+  renderBusy,
+  renderConfig,
   onStartPreprocess,
   onStartAnalysis,
   onGenerate,
   onStartNarration,
+  onStartRender,
   onScriptLanguage,
   onScriptDuration,
 }: {
@@ -1050,10 +1143,15 @@ function ProjectCard({
   narrationSrt: string | null;
   narrationBusy: boolean;
   tts: SystemStatus["tts"] | null;
+  renderRun: RenderRun | null;
+  renderManifest: RenderManifestDocument | null;
+  renderBusy: boolean;
+  renderConfig: SystemStatus["render"] | null;
   onStartPreprocess: () => void;
   onStartAnalysis: () => void;
   onGenerate: () => void;
   onStartNarration: () => void;
+  onStartRender: () => void;
   onScriptLanguage: (language: Language) => void;
   onScriptDuration: (duration: DurationMinutes) => void;
 }) {
@@ -1128,7 +1226,13 @@ function ProjectCard({
                   ? "Generating narration locally"
                   : project.status === "narration_ready"
                     ? "Narration ready"
-                    : "Video";
+                    : project.status === "rendering"
+                      ? "Rendering final video"
+                      : project.status === "render_failed"
+                        ? "Render failed - retry below"
+                        : project.status === "completed"
+                          ? "Final video ready"
+                          : "Video";
 
   return (
     <section
@@ -1358,12 +1462,60 @@ function ProjectCard({
             language={scriptLanguage}
             onStartNarration={onStartNarration}
           />
+          <FinalVideoSetup
+            project={project}
+            renderConfig={renderConfig}
+            busy={renderBusy}
+            language={scriptLanguage}
+            narrationDurationMs={
+              narrationManifest?.generation.duration_ms ??
+              narrationRun?.duration_ms ??
+              null
+            }
+            onStartRender={onStartRender}
+          />
+        </>
+      )}
+
+      {project.status === "rendering" && (
+        <RenderProgress project={project} renderRun={renderRun} />
+      )}
+
+      {project.status === "render_failed" && (
+        <>
+          {project.error_message && (
+            <p className="field-error" role="alert">
+              {project.error_message} The narration and script are intact -
+              you can retry the render below.
+            </p>
+          )}
+          <FinalVideoSetup
+            project={project}
+            renderConfig={renderConfig}
+            busy={renderBusy}
+            onStartRender={onStartRender}
+          />
+        </>
+      )}
+
+      {project.status === "completed" && (
+        <>
+          <FinalVideoPreview
+            project={project}
+            renderRun={renderRun}
+            manifest={renderManifest}
+            busy={renderBusy}
+            onStartRender={onStartRender}
+          />
         </>
       )}
 
       {(project.status === "analyzed" ||
         project.status === "script_ready" ||
-        project.status === "narration_ready") &&
+        project.status === "narration_ready" ||
+        project.status === "rendering" ||
+        project.status === "render_failed" ||
+        project.status === "completed") &&
         analysis && (
           <AnalysisPanel
             project={project}
@@ -1380,6 +1532,405 @@ function ProjectCard({
 /* ------------------------------------------------------------------ */
 /*  Phase 5: generation controls + live progress + script preview     */
 /* ------------------------------------------------------------------ */
+
+const RENDER_STAGES: { key: string; label: string }[] = [
+  { key: "preparing_plan", label: "Preparing render plan" },
+  { key: "extracting_clips", label: "Extracting & normalizing scene clips" },
+  { key: "assembling_video", label: "Assembling the video timeline" },
+  { key: "preparing_original_audio", label: "Preparing original audio" },
+  { key: "mixing_audio", label: "Mixing narration + original audio" },
+  {
+    key: "rendering_final_video",
+    label: "Rendering final video (burning subtitles)",
+  },
+  { key: "finalizing", label: "Finalizing" },
+  { key: "qc", label: "Validating final MP4" },
+];
+
+function FinalVideoSetup({
+  project: _project,
+  renderConfig,
+  busy,
+  language,
+  narrationDurationMs,
+  selectedSceneCount,
+  onStartRender,
+}: {
+  project: Project;
+  renderConfig: SystemStatus["render"] | null;
+  busy: boolean;
+  language?: Language | null;
+  narrationDurationMs?: number | null;
+  selectedSceneCount?: number | null;
+  onStartRender: () => void;
+}) {
+  const burn = renderConfig?.subtitle_burn ?? true;
+  const fontOk = renderConfig?.subtitle_font_configured ?? false;
+  const needsFont =
+    burn &&
+    (language === "hi" || language === "bn") &&
+    renderConfig != null &&
+    !fontOk;
+  const renderEnabled = Boolean(renderConfig?.enabled);
+
+  const rows = [
+    { label: "Language", value: language ? LANGUAGE_LABEL[language] : "—" },
+    {
+      label: "Narration length",
+      value: clockMs(narrationDurationMs ?? null),
+    },
+    {
+      label: "Selected scenes",
+      value:
+        selectedSceneCount != null
+          ? `${selectedSceneCount} clips`
+          : "from story plan",
+    },
+    {
+      label: "Output resolution",
+      value: renderConfig
+        ? `${renderConfig.output_max[0]}×${renderConfig.output_max[1]} max`
+        : "—",
+    },
+    {
+      label: "Frame rate",
+      value: renderConfig ? `${renderConfig.output_fps} fps` : "—",
+    },
+    {
+      label: "Encoder",
+      value: renderConfig
+        ? `${renderConfig.codec} · ${renderConfig.preset} · CRF ${renderConfig.crf}`
+        : "—",
+    },
+    {
+      label: "Subtitles",
+      value: burn
+        ? fontOk
+          ? "burned into the video (libass)"
+          : "burn-in needs a Unicode font"
+        : "burn-in disabled",
+    },
+    {
+      label: "Original audio",
+      value: !renderConfig?.original_audio
+        ? "narration only"
+        : renderConfig?.ducking
+          ? "mixed, ducked under narration"
+          : "mixed at the configured level",
+    },
+  ];
+
+  return (
+    <div className="script-panel mt-12">
+      <h3 className="panel-title">Create final video</h3>
+      <p className="hint" style={{ margin: 0 }}>
+        Phase 7 renders the selected important scenes from the story plan, mixes
+        the narration with the original audio, burns the synchronized subtitles
+        and encodes a CPU-friendly H.264 MP4 — everything stays on this PC.
+      </p>
+
+      <div className="kv-grid" style={{ marginTop: 10 }}>
+        {rows.map((row) => (
+          <div className="kv" key={row.label}>
+            <span className="kv-key">{row.label}</span>
+            <span className="kv-value" title={row.value}>
+              {row.value}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {renderConfig != null && !renderEnabled && (
+        <div className="warn-box">
+          <strong>Rendering is not enabled</strong>
+          <p style={{ margin: "6px 0 0" }}>
+            {renderConfig.note ??
+              "FFmpeg rendering is disabled in this build's configuration."}
+          </p>
+        </div>
+      )}
+      {renderConfig != null && burn && !fontOk && (
+        <div className="warn-box">
+          <strong>Subtitle burn-in needs a Unicode font</strong>
+          <p style={{ margin: "6px 0 0" }}>
+            {language === "hi" || language === "bn"
+              ? "To burn Hindi/Bengali subtitles correctly, set SUBTITLE_FONT_PATH to a font that covers Devanagari/Bengali (see README, Phase 7 — fonts). The render will fail rather than show boxes."
+              : "No subtitle font is configured. Set SUBTITLE_FONT_PATH or SUBTITLE_FONT_NAME in the environment for burned-in subtitles."}
+          </p>
+        </div>
+      )}
+      {needsFont && (
+        <p className="field-error" role="alert" style={{ marginTop: 8 }}>
+          {LANGUAGE_LABEL[language ?? "en"]} subtitles require a configured
+          Unicode font — set SUBTITLE_FONT_PATH before rendering.
+        </p>
+      )}
+
+      <button
+        type="button"
+        className="btn btn-primary mt-12"
+        onClick={onStartRender}
+        disabled={busy || !renderEnabled || needsFont}
+      >
+        {busy ? "Queuing…" : "Create final video"}
+      </button>
+      <p className="hint" style={{ marginTop: 8, marginBottom: 0 }}>
+        Only the selected scenes are encoded — the original video is not
+        re-transcoded end to end. The renderer normalizes clips, ducks the
+        original audio under the narration, and validates the finished MP4 with
+        FFprobe before marking the project complete.
+      </p>
+    </div>
+  );
+}
+
+function RenderProgress({
+  project,
+  renderRun,
+}: {
+  project: Project;
+  renderRun: RenderRun | null;
+}) {
+  const current = renderRun?.current_stage ?? null;
+  const currentIndex = current
+    ? RENDER_STAGES.findIndex((stage) => stage.key === current)
+    : -1;
+  const stageLabel =
+    currentIndex >= 0
+      ? RENDER_STAGES[currentIndex].label
+      : renderRun?.status === "queued"
+        ? "Waiting for the worker…"
+        : "Preparing render…";
+
+  return (
+    <div className="script-panel mt-12">
+      <h3 className="panel-title">Rendering final video</h3>
+      <div
+        className="upload-progress"
+        role="progressbar"
+        aria-valuenow={Math.round(project.progress)}
+      >
+        <div className="flex-between">
+          <strong>{stageLabel}</strong>
+          <span className="muted">{Math.round(project.progress)}%</span>
+        </div>
+        <span className="progress-track">
+          <i style={{ width: `${project.progress}%` }} />
+        </span>
+      </div>
+
+      <ul className="stage-list" style={{ marginTop: 12 }}>
+        {RENDER_STAGES.map((stage, index) => {
+          const done = currentIndex >= 0 && index < currentIndex;
+          const active = index === currentIndex;
+          return (
+            <li
+              key={stage.key}
+              className={`stage-row${done ? " done" : ""}${active ? " active" : ""}`}
+            >
+              <span className="stage-dot" aria-hidden />
+              <span className="stage-label">{stage.label}</span>
+            </li>
+          );
+        })}
+      </ul>
+
+      <p className="hint">
+        The single worker is extracting only the selected scene ranges, then it
+        mixes the narration with the original audio (ducked so speech stays
+        clear), burns subtitles and encodes the MP4. Progress is reported by
+        FFmpeg itself — nothing is faked.
+      </p>
+    </div>
+  );
+}
+
+function FinalVideoPreview({
+  project,
+  renderRun,
+  manifest,
+  busy,
+  onStartRender,
+}: {
+  project: Project;
+  renderRun: RenderRun | null;
+  manifest: RenderManifestDocument | null;
+  busy: boolean;
+  onStartRender: () => void;
+}) {
+  const media = manifest?.media ?? null;
+  const generation = manifest?.generation ?? null;
+  const qc = manifest?.quality ?? null;
+  const score = qc?.quality_score ?? renderRun?.qc_score ?? null;
+
+  const summaryRows = [
+    {
+      label: "Language",
+      value: generation ? LANGUAGE_LABEL[generation.language] : "—",
+    },
+    {
+      label: "Requested length",
+      value: generation
+        ? `${Math.round(generation.requested_duration_seconds / 60)} min`
+        : "—",
+    },
+    {
+      label: "Narration",
+      value: clockMs(generation?.narration_duration_ms ?? null),
+    },
+    {
+      label: "Final duration",
+      value: clockMs(
+        media?.duration_ms ?? renderRun?.output_duration_ms ?? null,
+      ),
+    },
+    {
+      label: "Resolution",
+      value:
+        media?.width && media?.height
+          ? `${media.width}×${media.height}`
+          : renderRun?.output_width && renderRun?.output_height
+            ? `${renderRun.output_width}×${renderRun.output_height}`
+            : "—",
+    },
+    {
+      label: "Frame rate",
+      value: String(media?.fps ?? renderRun?.output_fps ?? "—"),
+    },
+    {
+      label: "File size",
+      value:
+        media?.size_bytes != null
+          ? fileSize(media.size_bytes)
+          : renderRun?.output_size_bytes != null
+            ? fileSize(renderRun.output_size_bytes)
+            : "—",
+    },
+    {
+      label: "Video codec",
+      value: media?.video_codec ?? "—",
+    },
+    {
+      label: "Audio codec",
+      value: media?.audio_codec ?? "—",
+    },
+    {
+      label: "Quality score",
+      value: score != null ? `${Math.round(score)} / 100` : "—",
+    },
+  ];
+
+  const chipLabels: { key: string; label: string }[] = [
+    { key: "container_score", label: "container" },
+    { key: "video_score", label: "video" },
+    { key: "audio_score", label: "audio" },
+    { key: "timeline_score", label: "sync/timeline" },
+    { key: "subtitle_score", label: "subtitles" },
+    { key: "decode_score", label: "decodes" },
+  ];
+
+  return (
+    <div className="script-panel mt-12">
+      <h3 className="panel-title">Final video ready</h3>
+      <video
+        className="video-player"
+        controls
+        preload="metadata"
+        src={renderVideoUrl(project.id)}
+      >
+        Your browser does not support the video element.
+      </video>
+
+      <div className="link-row">
+        <a
+          className="btn btn-sm"
+          href={renderVideoUrl(project.id)}
+          download="final.mp4"
+        >
+          Download MP4
+        </a>
+        <a
+          className="btn btn-sm"
+          href={renderSubtitlesUrl(project.id, "srt")}
+          download="subtitles.srt"
+        >
+          Download SRT
+        </a>
+        <a
+          className="btn btn-sm"
+          href={renderSubtitlesUrl(project.id, "vtt")}
+          download="subtitles.vtt"
+        >
+          Download VTT
+        </a>
+      </div>
+
+      <div className="kv-grid" style={{ marginTop: 8 }}>
+        {summaryRows.map((row) => (
+          <div className="kv" key={row.label}>
+            <span className="kv-key">{row.label}</span>
+            <span className="kv-value" title={row.value}>
+              {row.value}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex-between" style={{ marginTop: 4 }}>
+        <span className="kv-key">Subtitles</span>
+        <span className="kv-value">
+          {manifest?.subtitles?.burned
+            ? "burned into video"
+            : "burn-in disabled"}
+          {manifest?.subtitles?.sidecar_srt ? " · sidecar SRT kept" : ""}
+        </span>
+      </div>
+
+      {qc && (
+        <>
+          <h3 className="panel-title">Final QC</h3>
+          <div className="quality-checks">
+            {chipLabels.map((item) => {
+              const value = qc.scores?.[item.key];
+              return value == null ? null : (
+                <span key={item.key} className="quality-chip ok">
+                  {item.label} {Math.round(value)}
+                </span>
+              );
+            })}
+          </div>
+          {(manifest?.warnings ?? []).length > 0 && (
+            <div className="warn-box">
+              <strong>Warnings</strong>
+              <ul>
+                {(manifest?.warnings ?? []).map((warning, index) => (
+                  <li key={index}>{warning}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+
+      <div className="field mt-12" style={{ marginBottom: 8 }}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={onStartRender}
+          disabled={busy}
+        >
+          {busy ? "Queuing…" : "Render again"}
+        </button>
+      </div>
+      <p className="hint" style={{ margin: 0 }}>
+        The MP4 uses the narration recorded for this script, with the original
+        audio ducked underneath. To change language, length, voice or scenes,
+        regenerate the explanation or narration above — the final video is then
+        re-rendered from the updated artifacts.
+      </p>
+    </div>
+  );
+}
 
 function GeneratePanel({
   analysis,

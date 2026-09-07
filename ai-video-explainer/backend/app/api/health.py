@@ -5,6 +5,7 @@ from __future__ import annotations
 import platform
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends
 
@@ -219,13 +220,32 @@ def system_status(
             },
             "llm": _llm_report(settings),
             "tts": tts,
-            "phase": "6",
+            "render": {
+                "enabled": True,
+                "codec": settings.video_codec,
+                "preset": settings.video_preset,
+                "crf": settings.video_crf,
+                "output_max": [settings.output_max_width, settings.output_max_height],
+                "output_fps": settings.output_fps,
+                "subtitle_burn": settings.subtitle_burn_enabled,
+                "subtitle_font_configured": bool(
+                    settings.subtitle_font_path and Path(settings.subtitle_font_path).is_file()
+                ) or bool(settings.subtitle_font_name),
+                "original_audio": settings.original_audio_enabled,
+                "ducking": settings.audio_ducking_enabled,
+                "note": (
+                    "CPU-first libx264 encode; the original audio is ducked "
+                    "under the narration; subtitles burn via FFmpeg/libass. "
+                    "Hindi/Bengali burn-in requires SUBTITLE_FONT_PATH."
+                ),
+            },
+            "phase": "7",
             "message": (
-                "Phase 6 local narration: SCRIPT_READY videos get a "
-                "measured segment-by-segment Piper voice track, a narration "
-                "timeline, synchronized UTF-8 SRT/VTT subtitles and a "
-                "deterministic audio QC report (NARRATION_READY). No cloud "
-                "APIs; missing engines/voices are reported with explicit "
-                "setup instructions."
+                "Phase 7 final video: NARRATION_READY projects render the "
+                "selected important scenes with mixed audio (narration "
+                "leads, original audio ducked under it), burned-in UTF-8 "
+                "subtitles and a deterministic final QC report (COMPLETED). "
+                "No cloud APIs; missing binaries/fonts are reported with "
+                "explicit setup instructions."
             ),
         }

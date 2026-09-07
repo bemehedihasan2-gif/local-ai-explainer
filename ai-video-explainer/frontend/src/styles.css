@@ -1052,3 +1052,77 @@ td.filename {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ------------------------------------------------------------------ */
+/*  Phase 7: final render preview, stage progress                     */
+/* ------------------------------------------------------------------ */
+
+.video-player {
+  width: 100%;
+  margin: 6px 0 8px;
+  max-height: 380px;
+  border-radius: 10px;
+  background: #000;
+}
+
+.stage-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.stage-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  font-size: 12.5px;
+  border-bottom: 1px dashed var(--border);
+  color: var(--muted);
+}
+
+.stage-row:last-child {
+  border-bottom: none;
+}
+
+.stage-row.done {
+  color: var(--ok, #2e7d32);
+}
+
+.stage-row.active {
+  color: var(--accent);
+  font-weight: 600;
+  background: var(--accent-soft);
+}
+
+.stage-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  flex: none;
+}
+
+.stage-row.done .stage-dot {
+  background: var(--ok, #2e7d32);
+  border-color: var(--ok, #2e7d32);
+}
+
+.stage-row.active .stage-dot {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.tag-rendering {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.tag-render_failed {
+  background: var(--danger-soft);
+  color: var(--danger);
+}

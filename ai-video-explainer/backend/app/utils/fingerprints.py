@@ -132,6 +132,58 @@ _TTS_SETTINGS = (
 )
 
 
+_RENDER_SETTINGS = (
+    "output_max_width",
+    "output_max_height",
+    "output_fps",
+    "video_codec",
+    "video_preset",
+    "video_crf",
+    "original_audio_enabled",
+    "original_audio_volume",
+    "narration_audio_volume",
+    "audio_ducking_enabled",
+    "audio_ducking_threshold",
+    "audio_ducking_ratio",
+    "audio_ducking_attack_ms",
+    "audio_ducking_release_ms",
+    "subtitle_burn_enabled",
+    "subtitle_font_path",
+    "subtitle_font_name",
+    "subtitle_font_size",
+    "subtitle_margin_v",
+    "render_tail_ms",
+    "renderer_version",
+)
+
+
+def render_fingerprint(
+    settings: Any,
+    *,
+    source_sha256: str | None,
+    source_duration: float | None,
+    selected_scenes_digest: str,
+    narration_fingerprint: str,
+) -> str:
+    """Hash of everything that changes the Phase 7 final render.
+
+    Combines the consumed media identity (source hash + duration), the
+    Phase 5 scene-selection document and the Phase 6 narration fingerprint
+    with every render/subtitle/audio setting. Stored on ``render_runs``;
+    when it matches a completed run with a valid final.mp4 the render is
+    reused instead of being encoded again.
+    """
+    payload: dict[str, Any] = {
+        "source_sha256": source_sha256,
+        "source_duration": source_duration,
+        "selected_scenes": selected_scenes_digest,
+        "narration_fingerprint": narration_fingerprint,
+    }
+    for name in _RENDER_SETTINGS:
+        payload[name] = getattr(settings, name)
+    return _sha256_json(payload)
+
+
 def narration_fingerprint(
     settings: Any,
     script_fingerprint: str,
@@ -168,4 +220,5 @@ __all__ = [
     "preprocessing_fingerprint",
     "story_generation_fingerprint",
     "narration_fingerprint",
+    "render_fingerprint",
 ]

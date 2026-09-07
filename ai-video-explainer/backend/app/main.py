@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from app.api.health import router as health_router
 from app.api.narration import router as narration_router
 from app.api.projects import router as projects_router
+from app.api.render import router as render_router
 from app.api.scripts import router as scripts_router
 from app.config import Settings, get_settings
 from app.database.connection import Database
@@ -97,15 +98,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         description=(
-            "Phase 6: a local, zero-cost AI video explainer. Videos stream "
+            "Phase 7: a local, zero-cost AI video explainer. Videos stream "
             "to disk, are validated with FFprobe, preprocessed into analysis "
             "assets, analyzed entirely on-device (scene detection, "
             "speech-to-text, OCR, visual metadata, aligned timeline), then "
             "understood by a small local LLM which writes a duration-aware "
             "narration script in English/Hindi/Bengali. Phase 6 synthesizes "
-            "the narration locally (Piper) segment by segment, measures the "
-            "real audio, and emits synchronized UTF-8 SRT/VTT subtitles. "
-            "Final video mixing/rendering arrives in Phase 7."
+            "the narration locally (Piper) with real measured audio and "
+            "synchronized UTF-8 SRT/VTT subtitles. Phase 7 mixes the "
+            "narration with the original audio (ducking), burns the "
+            "subtitles into the selected important scenes and encodes a "
+            "final MP4 with deterministic QC - all locally, no paid APIs."
         ),
         lifespan=lifespan,
     )
@@ -131,6 +134,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(projects_router)
     app.include_router(scripts_router)
     app.include_router(narration_router)
+    app.include_router(render_router)
     register_exception_handlers(app)
 
     @app.get("/", include_in_schema=False)
@@ -138,7 +142,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "app": settings.app_name,
             "version": settings.app_version,
-            "phase": 6,
+            "phase": 7,
             "api": {
                 "health": "/api/health",
                 "system_status": "/api/system/status",
@@ -163,11 +167,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "narration_audio": "/api/projects/{id}/narration/audio",
                 "narration_subtitles": "/api/projects/{id}/narration/subtitles",
                 "narration_segments": "/api/projects/{id}/narration/segments",
+                "render": "/api/projects/{id}/render",
+                "render_status": "/api/projects/{id}/render-status",
+                "render_video": "/api/projects/{id}/render/video",
+                "render_subtitles": "/api/projects/{id}/render/subtitles",
+                "render_plan": "/api/projects/{id}/render-plan",
             },
             "docs": "/docs",
         }
 
-    logger.info("Application factory ready (phase 6).")
+    logger.info("Application factory ready (phase 7).")
     return app
 
 

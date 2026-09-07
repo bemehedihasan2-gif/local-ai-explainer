@@ -536,7 +536,7 @@ def test_artifact_endpoints_404_before_generation(client, deterministic_ai) -> N
 def test_system_status_reports_llm_capabilities(client, fake_llm) -> None:
     test_client, _ = client
     body = test_client.get("/api/system/status").json()
-    assert body["phase"] == "6"
+    assert body["phase"] == "7"
     llm = body["llm"]
     assert llm["provider"] == "llama_cpp"
     assert llm["available"] in (True, False)

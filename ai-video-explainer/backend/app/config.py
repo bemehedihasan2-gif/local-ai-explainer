@@ -47,7 +47,7 @@ class Settings(BaseSettings):
 
     # Application -------------------------------------------------------
     app_name: str = "Local AI Video Explainer"
-    app_version: str = "0.6.0"
+    app_version: str = "0.7.0"
     environment: str = "development"
 
     # Servers -----------------------------------------------------------
@@ -233,6 +233,50 @@ class Settings(BaseSettings):
     # Narration QC: allowed mismatch between the assembled WAV duration and
     # the narration timeline (ms) - tiny writer rounding is normal.
     narration_qc_duration_tolerance_ms: int = 400
+
+    # Phase 7 - final video render (mixing + subtitle burn-in + encode) ---
+    #: Output size cap. Source <=720p keeps its resolution (even sizes);
+    #: larger sources are downscaled to fit these maxima; never upscales.
+    output_max_width: int = 1280
+    output_max_height: int = 720
+    #: Output frame rate. An integer forces that rate (default 30); the
+    #: string "source" keeps the (normalized) source rate instead.
+    output_fps: int | str = 30
+    #: CPU-friendly encoder settings (no GPU dependency on the 8 GB target).
+    video_codec: str = "libx264"
+    video_preset: str = "veryfast"
+    video_crf: int = 23
+    #: Original-audio behavior in the mix (narration stays the lead voice).
+    original_audio_enabled: bool = True
+    original_audio_volume: float = 0.18
+    narration_audio_volume: float = 1.0
+    #: Narration-driven ducking of the original audio (attack/release ms).
+    audio_ducking_enabled: bool = True
+    audio_ducking_threshold: float = 0.02
+    audio_ducking_ratio: float = 6.0
+    audio_ducking_attack_ms: int = 15
+    audio_ducking_release_ms: int = 350
+    #: Subtitle burn-in (the SRT stays available as a sidecar either way).
+    subtitle_burn_enabled: bool = True
+    #: Optional path to a Unicode font covering Latin + Devanagari + Bengali
+    #: (e.g. Windows \\Windows\\Fonts\\Nirmala.ttc, or a Noto Sans font).
+    #: REQUIRED for Hindi/Bengali burn-in when SUBTITLE_FONT_NAME is empty -
+    #: the renderer refuses rather than rendering boxes.
+    subtitle_font_path: Path | None = None
+    #: Font family name passed to libass force_style (auto: basename of the
+    #: configured font path).
+    subtitle_font_name: str | None = None
+    subtitle_font_size: int = 20
+    subtitle_margin_v: int = 24
+    #: Narration-lead alignment: ms of the last scene held after narration
+    #: ends (video never ends before narration) and pre-roll tolerated.
+    render_tail_ms: int = 1200
+    render_hold_gap_max_ms: int = 1500
+    #: Upper bound for one render ffmpeg pass (long clips, slow CPU).
+    render_timeout_seconds: int = 3600
+    #: Renderer version - part of the render fingerprint; bump to force
+    #: re-renders when the command building changes.
+    renderer_version: str = "1.0"
 
     # Storage (relative -> resolved against base_dir by the validator) ---
 
@@ -500,6 +544,53 @@ class Settings(BaseSettings):
     def _subtitle_caption_limit(cls, value: int) -> int:
         if not 20 <= value <= 200:
             raise ValueError("subtitle_max_chars_per_caption must be in [20, 200]")
+        return value
+
+    @field_validator("output_max_width", "output_max_height")
+    @classmethod
+    def _output_size_positive(cls, value: int) -> int:
+        if not 16 <= value <= 7680:
+            raise ValueError("output_max_width/height must be in [16, 7680]")
+        return value
+
+    @field_validator("output_fps")
+    @classmethod
+    def _output_fps_valid(cls, value: int | str) -> int | str:
+        if isinstance(value, str):
+            value = value.strip().lower()
+            if value != "source":
+                raise ValueError("output_fps must be a number or 'source'")
+            return value
+        if not 1 <= value <= 60:
+            raise ValueError("output_fps must be in [1, 60] or 'source'")
+        return value
+
+    @field_validator("video_crf")
+    @classmethod
+    def _video_crf_range(cls, value: int) -> int:
+        if not 0 <= value <= 51:
+            raise ValueError("video_crf must be in [0, 51]")
+        return value
+
+    @field_validator("original_audio_volume", "narration_audio_volume")
+    @classmethod
+    def _audio_volume_non_negative(cls, value: float) -> float:
+        if value < 0.0:
+            raise ValueError("audio volumes must be >= 0")
+        return value
+
+    @field_validator("subtitle_font_size")
+    @classmethod
+    def _subtitle_font_size_range(cls, value: int) -> int:
+        if not 8 <= value <= 96:
+            raise ValueError("subtitle_font_size must be in [8, 96]")
+        return value
+
+    @field_validator("render_timeout_seconds")
+    @classmethod
+    def _render_timeout_positive(cls, value: int) -> int:
+        if value < 30:
+            raise ValueError("render_timeout_seconds must be >= 30")
         return value
 
     @field_validator("subtitle_max_chars_per_line")

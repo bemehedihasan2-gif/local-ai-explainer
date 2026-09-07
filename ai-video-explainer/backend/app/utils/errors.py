@@ -438,6 +438,66 @@ class NarrationConflictError(ExplainerError):
     default_message = "Narration generation is already running for this project."
 
 
+class RenderNotReadyError(ExplainerError):
+    """Final rendering requires a NARRATION_READY project."""
+
+    status_code = 409
+    code = "render_not_ready"
+    default_message = (
+        "This project cannot be rendered yet. Generate the narration first "
+        "(status becomes NARRATION_READY)."
+    )
+
+
+class RenderConflictError(ExplainerError):
+    """A render job is already queued or running for the project."""
+
+    status_code = 409
+    code = "render_already_running"
+    default_message = "Final rendering is already running for this project."
+
+
+class RenderArtifactError(ExplainerError):
+    """A required Phase 5/6 artifact is missing or unreadable."""
+
+    status_code = 422
+    code = "render_artifacts_missing"
+    default_message = (
+        "Some required story/narration artifacts are missing. Re-run the "
+        "script or narration generation for this project."
+    )
+
+
+class SubtitleFontMissingError(ExplainerError):
+    """Subtitle burn-in needs a Unicode font for Hindi/Bengali rendering."""
+
+    status_code = 503
+    code = "subtitle_font_missing"
+    default_message = (
+        "Subtitle burn-in for Hindi/Bengali needs a Unicode font that "
+        "covers Devanagari/Bengali (e.g. Windows 'Nirmala UI' or a Noto "
+        "Sans font). Set SUBTITLE_FONT_PATH (or SUBTITLE_FONT_NAME) in "
+        ".env - the renderer refuses to burn boxes. English can render "
+        "with the default sans font."
+    )
+
+
+class RenderError(ExplainerError):
+    """FFmpeg mixing/encoding failed or produced an unusable file."""
+
+    status_code = 500
+    code = "render_failed"
+    default_message = "Final video rendering failed."
+
+
+class FinalQCRejectedError(ExplainerError):
+    """The rendered MP4 failed the deterministic final media QC."""
+
+    status_code = 500
+    code = "final_qc_failed"
+    default_message = "The rendered video failed final quality control."
+
+
 class NotInPhase1Error(ExplainerError):
     """Feature is deliberately not implemented yet (scope guard).
 
