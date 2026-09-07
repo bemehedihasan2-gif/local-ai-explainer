@@ -70,7 +70,10 @@ def probe_payload(
     )
 
 
-def _fake_ffmpeg_source(preprocess_mode: str = "ok") -> str:
+def _fake_ffmpeg_source(
+    preprocess_mode: str = "ok",
+    scene_changes: list[float] | None = None,
+) -> str:
     """Source for the fake ffmpeg executable.
 
     ``preprocess_mode`` controls behavior when ``-progress`` is present
@@ -81,6 +84,14 @@ def _fake_ffmpeg_source(preprocess_mode: str = "ok") -> str:
       - "slow": like "ok", but sleeps between progress lines so tests can
         observe intermediate job/project states.
       - "fail": prints an ffmpeg-style error to stderr and exits 1.
+
+    Phase 4 analysis invocations are recognized by their argv shape:
+      - frame extraction (``%03d`` output pattern): writes three small but
+        *valid* JPEGs (scene_000.jpg ... scene_002.jpg) using PIL, so the
+        deterministic visual stage can actually open them.
+      - scene detection (``select='gt(scene,...)'``): prints ``out_time_us``
+        progress on stdout and ``showinfo`` lines (with ``pts_time`` at
+        ``scene_changes``, default [3.2, 7.8]) on stderr.
     """
     if preprocess_mode == "fail":
         behavior = (
@@ -111,13 +122,45 @@ def _fake_ffmpeg_source(preprocess_mode: str = "ok") -> str:
             "        out.write(b'fake-asset')\n"
             "    sys.exit(0)\n"
         )
+
+    changes = scene_changes if scene_changes is not None else [3.2, 7.8]
+    showinfo_lines = "".join(
+        f"    print('[Parsed_showinfo_1 @ 0x0] n: 0 pts: 0 "
+        f"pts_time:{change} ', file=sys.stderr)\n"
+        for change in changes
+    )
+    frame_extraction = (
+        "    try:\n"
+        "        from PIL import Image\n"
+        "        pattern = sys.argv[-1]\n"
+        "        prefix, suffix = pattern.split('%03d')\n"
+        "        for i in range(3):\n"
+        "            img = Image.new('RGB', (64, 48), (i * 60 + 40, 80, 160))\n"
+        "            img.save(prefix + ('%03d' % i) + suffix, 'JPEG')\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    sys.exit(0)\n"
+    )
+    scene_detection = (
+        "    for us in (0, 3000000, 8000000, 12500000):\n"
+        "        print(f'out_time_us={us}')\n"
+        "    print('progress=end')\n"
+        + showinfo_lines
+        + "    sys.exit(0)\n"
+    )
     return (
         f"#!{sys.executable}\n"
         "import sys\n"
         "if '-version' in sys.argv:\n"
         "    print('ffmpeg version 7.1.1-fake Copyright (c) 2000-2024 the FFmpeg developers')\n"
         "    sys.exit(0)\n"
-        "if '-progress' in sys.argv:\n"
+        "if '%03d' in sys.argv[-1]:\n"
+        "    print('out_time_us=12500000')\n"
+        "    print('progress=end')\n"
+        + frame_extraction
+        + "if 'select=' in ' '.join(sys.argv):\n"
+        + scene_detection
+        + "if '-progress' in sys.argv:\n"
         + behavior
         + "print('fake ffmpeg: no transcoding in tests')\n"
     )
@@ -129,6 +172,7 @@ def install_fake_media_tools(
     probe_body: str | None = None,
     probe_mode: str = "ok",
     preprocess_mode: str = "ok",
+    scene_changes: list[float] | None = None,
 ) -> tuple[str, str]:
     """Create fake ``ffmpeg`` + ``ffprobe`` executables under ``tmp_path``.
 
@@ -139,9 +183,10 @@ def install_fake_media_tools(
 
     ``preprocess_mode`` (see :func:`_fake_ffmpeg_source`): "ok" | "slow" |
     "fail" - controls the fake ffmpeg's ``-progress`` behavior used by the
-    Phase 3 preprocessing service.
+    Phase 3 preprocessing service. ``scene_changes`` sets where the fake
+    scene detector reports boundaries (default [3.2, 7.8] -> 3 scenes).
     """
-    ffmpeg_src = _fake_ffmpeg_source(preprocess_mode)
+    ffmpeg_src = _fake_ffmpeg_source(preprocess_mode, scene_changes)
 
     # Every mode answers ``-version`` first so binary detection succeeds;
     # the behavior after that differs per probe_mode.

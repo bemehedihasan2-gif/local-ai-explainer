@@ -1,4 +1,4 @@
-# Local AI Video Explainer — Phase 3: Preprocessing & Analysis Assets
+# Local AI Video Explainer — Phase 4: On-Device Analysis
 
 A **local, zero-cost AI video explainer** for Windows: drop in almost any video
 (movie, TV, gameplay, tutorial, lecture, sports, screen recording, social,
@@ -10,18 +10,29 @@ MP4 with synchronized subtitles.
 > streamed to disk (never loaded fully into RAM), fingerprinted with SHA-256,
 > validated by FFprobe, and their metadata is stored in SQLite.
 >
-> **Phase 3** adds **preprocessing & analysis-asset generation**: a single
+> **Phase 3** added **preprocessing & analysis-asset generation**: a single
 > background worker turns a validated (**READY**) video into a **PREPARED**
 > project with three FFmpeg-built assets — a low-resolution analysis copy
-> (≤ 640 px @ 5 fps H.264, what later vision/OCR stages will read), a poster
-> JPEG thumbnail, and a 16 kHz mono WAV audio track for speech-to-text.
+> (≤ 640 px @ 5 fps H.264, what vision/OCR stages read), a poster JPEG
+> thumbnail, and a 16 kHz mono WAV audio track for speech-to-text.
 >
-> **No AI inference happens yet** — no Whisper, no vision, no script, no TTS,
-> no rendering — and the code never fakes results.
+> **Phase 4 (this phase) adds the first real local understanding pipeline:**
+> the **PREPARED** project is analyzed entirely on-device — deterministic
+> FFmpeg **scene detection** with representative frames, **speech-to-text**
+> (faster-whisper, CPU `int8`, `tiny`/`base`), **OCR** (Tesseract) on scene
+> frames, **deterministic visual metadata** (brightness/blur/complexity), and
+> a **timeline alignment + context aggregation** pass that binds all evidence
+> to scenes — producing structured `analysis/metadata/*.json` and the
+> **ANALYZED** status. Optional local models degrade gracefully
+> (`UNAVAILABLE`/`SKIPPED`), never faked.
+>
+> **No script/TTS/rendering yet** — story understanding and generation are
+> later phases, and the code never fakes results.
 >
 > **No paid APIs.** No Claude/OpenAI/Gemini keys. Everything runs on the
 > user's PC, targeting 8 GB RAM, CPU-only, integrated graphics. Only **one
-> heavy job runs at a time** (worker, `PROCESSING_CONCURRENCY=1`).
+> heavy job runs at a time** (worker, `PROCESSING_CONCURRENCY=1`), models are
+> lazy-loaded and released after each stage.
 
 ## Why this folder?
 
@@ -36,12 +47,32 @@ All storage paths resolve relative to this folder by default.
 | --------- | -------------------------- | ------------------------------------------------------------------- |
 | Python    | 3.10+ (3.11/3.12 preferred) | Backend (FastAPI, SQLite)                                          |
 | Node.js   | 18+ (20/22 preferred)       | Frontend build (Vite)                                              |
-| FFmpeg    | 6.x+ (ffmpeg **and** ffprobe) | **Required from Phase 2** — FFprobe validates every upload        |
+| FFmpeg    | 6.x+ (ffmpeg **and** ffprobe) | **Required from Phase 2** — FFprobe validates every upload; scene detection in Phase 4 |
+| Tesseract | 5.x (`tesseract` on PATH)   | **Optional** — OCR on scene frames. Without it OCR reports `unavailable` and the rest of the analysis still runs |
+| faster-whisper | Python package + one model | **Optional** — speech-to-text. Without it STT reports `model_download_required` and the rest of the analysis still runs |
 
 FFmpeg is **not** downloaded automatically. Install it (e.g. `winget install
 ffmpeg` or the gyan.dev build) and ensure `ffmpeg`/`ffprobe` are on PATH, or
 set `FFMPEG_PATH`/`FFPROBE_PATH` in `.env`. When FFmpeg is missing the UI shows
 a setup hint and uploads are rejected with a clear `ffmpeg_unavailable` error.
+
+### Phase 4 — first-run local model setup (optional, no API key)
+
+Speech-to-text uses faster-whisper with a **CPU-friendly `tiny` or `base`**
+model. The app **never downloads a model silently** — do it once, explicitly:
+
+```bat
+scripts\download_whisper_model.bat tiny   :: or base (~75 MB / ~145 MB)
+```
+
+(Linux/macOS: `scripts/download_whisper_model_unix.sh tiny`). The files land
+in `models/whisper/tiny/`, which `WHISPER_MODEL` in `.env` selects. Until the
+model exists, analysis completes with `transcript_available: false` and a
+clear warning — nothing is faked.
+
+Tesseract (OCR): Windows `winget install UB-Mannheim.TesseractOCR` (or the
+gyan.dev build), then ensure `tesseract` is on PATH (or set `TESSERACT_PATH`
+in `.env`).
 
 ## Supported video formats
 
@@ -67,27 +98,33 @@ ai-video-explainer/
 │   ├── app/
 │   │   ├── main.py           # app factory + entrypoint (uvicorn app.main:app)
 │   │   ├── config.py         # central settings (.env supported)
-│   │   ├── api/              # health, system status, projects, jobs, thumbnail
-│   │   ├── services/         # ffmpeg detection, storage, uploads, PREPROCESS,
-│   │   │                     #   worker (single-job queue), cleanup
-│   │   ├── ai/               # future pipeline interfaces (stubs, registry)
-│   │   ├── video/            # ffprobe probing (metadata + validation)
+│   │   ├── api/              # health, system status, projects, jobs, thumbnail,
+│   │   │                     #   analyze, analysis, timeline, frames
+│   │   ├── services/         # ffmpeg detection, storage, uploads, preprocess,
+│   │   │                     #   ANALYSIS (orchestrator), TIMELINE (alignment +
+│   │   │                     #   density), worker (single-job queue), cleanup
+│   │   ├── ai/               # stt (faster-whisper), ocr (Tesseract), vision
+│   │   │                     #   (deterministic PIL + optional LocalVisionProvider)
+│   │   ├── video/            # ffprobe probing (metadata + validation),
+│   │   │                     #   scenes (FFmpeg scene detection + frames)
 │   │   ├── database/         # SQLite connection + schema + migration
 │   │   ├── models/           # pydantic models + enums
-│   │   └── utils/            # errors, structured logging, path safety
-│   ├── tests/                # pytest suite (Phase 1 + 2 + 3)
+│   │   └── utils/            # errors, structured logging, path safety,
+│   │                         #   fingerprints (analysis idempotency)
+│   ├── tests/                # pytest suite (Phase 1 + 2 + 3 + 4)
 │   ├── requirements.txt
 │   └── requirements-dev.txt
 ├── frontend/                 # React + Vite + TypeScript UI
 │   └── src/                  # App, API client, types, styles
-├── models/                   # future local model files (empty)
+├── models/                   # local model files (whisper/tiny … Phase 4)
 ├── data/
 │   ├── projects/             # per project: input/ temp/ output/
 │   │                         #   analysis/ thumbnails/ audio/  (Phase 3)
+│   │                         #   analysis/{metadata,frames}/ (Phase 4)
 │   ├── uploads/  temp/  outputs/  cache/
 ├── logs/                     # app.log + errors.log (auto-rotated)
-├── scripts/                  # Windows .bat + unix helpers
-├── docs/architecture.md      # pipeline design (Phase 2 + 3 flows)
+├── scripts/                  # Windows .bat + unix helpers (incl. whisper download)
+├── docs/architecture.md      # pipeline design (Phase 2 + 3 + 4 flows)
 ├── env.example               # copy to .env (no real secrets exist)
 └── README.md
 ```
@@ -111,6 +148,14 @@ Notable knobs:
 | `THUMBNAIL_WIDTH`           | `320`                           | Poster JPEG width cap                    |
 | `AUDIO_SAMPLE_RATE` / `AUDIO_CHANNELS` | `16000` / `1`       | WAV for speech-to-text (16 kHz mono)     |
 | `PREPROCESS_TIMEOUT_SECONDS` | `600`                          | Timeout per FFmpeg preprocessing step    |
+| `ANALYSIS_TIMEOUT_SECONDS` | `1800`                          | Timeout per Phase 4 analysis stage       |
+| `WHISPER_MODEL` / `WHISPER_DEVICE` / `WHISPER_COMPUTE_TYPE` | `tiny` / `cpu` / `int8` | faster-whisper config (CPU-first)        |
+| `WHISPER_LANGUAGE_MODE`  | `preferred`                     | `preferred` (hint + auto-detect) · `auto` · `forced` |
+| `SCENE_THRESHOLD`        | `0.3`                           | FFmpeg scene filter sensitivity (0..1)    |
+| `MIN_SCENE_DURATION_SECONDS` / `MAX_SCENES` | `2.0` / `500`   | Scene assembly limits                    |
+| `OCR_ENABLED` / `OCR_FRAME_LIMIT` | `true` / `60`           | Tesseract OCR toggle + frame cap         |
+| `VISUAL_ANALYSIS_ENABLED` | `true`                          | Deterministic PIL frame metadata toggle   |
+| `TESSERACT_PATH`         | (auto-discover on PATH)         | Absolute binary path if not on PATH      |
 | `FFMPEG_PATH` / `FFPROBE_PATH` | (auto-discover on PATH)     | Absolute binary paths if not on PATH     |
 
 ## Windows setup
@@ -152,11 +197,12 @@ http://127.0.0.1:5173 — Vite proxies `/api` to the backend, so no CORS setup.
 
 Tests that need a real encoder generate tiny synthetic videos with FFmpeg and
 **skip gracefully** when FFmpeg is missing; the rest of the suite (Phase 1 + 2
-+ 3) runs against scripted fake ffmpeg/ffprobe binaries, so it works
-everywhere — including the full preprocess job lifecycle, worker
-serialization and failure paths.
++ 3 + 4) runs against scripted fake ffmpeg/ffprobe binaries, so it works
+everywhere — including the full preprocess **and analysis** job lifecycles,
+worker serialization, failure paths, STT/OCR/vision service units and
+timeline alignment.
 
-## API (Phase 3)
+## API (Phase 4)
 
 | Method | Endpoint                        | Purpose                                   |
 | ------ | ------------------------------- | ----------------------------------------- |
@@ -169,6 +215,10 @@ serialization and failure paths.
 | POST   | `/api/projects/{id}/preprocess` | **Queue Phase 3 preprocessing** (below)   |
 | GET    | `/api/projects/{id}/jobs`       | Job history (stage/status/progress/error) |
 | GET    | `/api/projects/{id}/thumbnail`  | Poster JPEG (once PREPARED)               |
+| POST   | `/api/projects/{id}/analyze`    | **Queue Phase 4 local analysis** (below)  |
+| GET    | `/api/projects/{id}/analysis`   | Latest analysis-run summary               |
+| GET    | `/api/projects/{id}/timeline`   | Aligned per-scene evidence timeline       |
+| GET    | `/api/projects/{id}/analysis/frames/{scene_id}` | Scene representative JPEG (path-safe) |
 | DELETE | `/api/projects/{id}`            | Delete record **and** controlled files    |
 
 ### `POST /api/projects/upload`
@@ -223,7 +273,9 @@ Stack traces go to `logs/errors.log` only.
 | `ready`        | Valid video + metadata stored (100%) — awaiting preprocessing  |
 | `preprocessing`| Phase 3 worker is building the analysis assets (0 → 100%)      |
 | `prepared`     | Analysis copy + poster + 16 kHz WAV ready — input for Phase 4+ |
-| `failed`       | Upload/validation/preprocessing failed; `error_message` explains |
+| `analyzing`    | Phase 4 worker is running the local analysis (0 → 100%)        |
+| `analyzed`     | Scenes / transcript / OCR / visual / timeline stored (100%)    |
+| `failed`       | Upload/validation/preprocessing/analysis failed; `error_message` explains |
 | `created`      | Record-only project created via the legacy endpoint             |
 | `queued/processing/completed` | Reserved for the future pipeline worker            |
 
@@ -262,7 +314,15 @@ Phase 3 extends the same migration pattern with asset columns:
 `analysis_path`/`analysis_width`/`analysis_height`/`analysis_fps`,
 `thumbnail_path`, `audio_path` (relative paths inside the project folder,
 never absolute) and `prepared_at`. `processing_jobs` now carries the worker's
-stages (`preprocess`), lifecycle and progress.
+stages (`preprocess`/`analysis`), lifecycle and progress.
+
+Phase 4 adds an `analysis_results` table (same additive migration): one row
+per run with `status` (`queued`/`running`/`completed`/`failed`),
+`current_stage`, timestamps, `detected_language`, `scene_count`,
+`transcript_available`, `ocr_available`, `visual_provider`,
+`processing_seconds`, `warnings`, plus **config/preprocessing fingerprints**
+for idempotency. Transcript/OCR payloads are **never** stored in SQLite —
+they live as JSON files under `analysis/metadata/`.
 
 ## Phase 3 preprocessing (how it works)
 
@@ -292,7 +352,60 @@ returns `409 job_conflict`. Missing FFmpeg fails the job cleanly
 `GET /api/projects/{id}/jobs` returns the job history; the poster is served
 from `GET /api/projects/{id}/thumbnail` (relative path only, path-safe).
 
-## Frontend (Phase 3)
+## Phase 4 local analysis (how it works)
+
+`POST /api/projects/{id}/analyze` on a **PREPARED** project (idempotent on
+**ANALYZED**, `409` conflicts while running, retry after failure):
+
+1. A `processing_jobs` row (`stage=analysis`) **and** an `analysis_results`
+   row are persisted, and the project becomes **analyzing**.
+2. The same single background worker runs the stages **sequentially** — one
+   heavy operation at a time, models lazy-loaded and released between stages:
+   - **Scene detection** (structural): FFmpeg's `select='gt(scene,T)'` filter
+     on the analysis copy (no extra Python package, RAM stays flat), then
+     boundary assembly enforcing `MIN_SCENE_DURATION_SECONDS` and
+     `MAX_SCENES`. Representative frames are extracted in one decode pass
+     into `analysis/frames/scene_%03d.jpg`.
+   - **Speech-to-text** (graceful): faster-whisper (`tiny`/`base`, CPU,
+     `int8`) transcribes `audio/audio.wav` — 16 kHz mono is its natural
+     input. `WHISPER_LANGUAGE_MODE=preferred` hints with the project language
+     while keeping auto-detection; the detected language + probability are
+     recorded. Missing model/package → `transcript_available: false` + a
+     clear message; silent videos → `SKIPPED_NO_AUDIO`.
+   - **OCR** (graceful): Tesseract on scene representative frames only
+     (grayscale + autocontrast, capped by `OCR_FRAME_LIMIT`), duplicates
+     dropped. Missing Tesseract → `ocr_available: false` + install hint.
+   - **Visual analysis** (graceful): deterministic PIL metadata per frame
+     (brightness, blur/edge-energy proxy, complexity, dimensions). A small
+     local vision model can be plugged in later through
+     `LocalVisionProvider` without touching the pipeline.
+   - **Timeline alignment**: every scene gets its overlapping transcript
+     segments, in-range OCR entries, representative frame and visual
+     metadata, plus a deterministic **information-density score** (0-100).
+   - **Quality check + manifest**: timestamp/range validation warnings and
+     `analysis_manifest.json` (fingerprints, availability flags, relative
+     asset references only — never absolute paths).
+3. Success → **analyzed** (100%) with the run summary in SQLite; the aligned
+   evidence is served by `GET /timeline` and frames by
+   `GET /analysis/frames/{scene_id}` (path-safe, integer-validated).
+   Failure → the run and job are `failed`, Phase 4 artifacts are removed
+   (Phase 3 assets are preserved), and the project returns to **prepared**
+   so Analyze can be retried without re-uploading or re-preprocessing.
+
+**Progress is honest:** fixed stage windows (preparing 5%, scene 25%, STT
+50%, OCR 70%, visual 82%, timeline 92%, QC 97%, finalizing 100%) fed by real
+per-stage progress (FFmpeg elapsed time, Whisper segment time, frames
+processed) — never invented percentages.
+
+**Idempotency:** the run stores a config fingerprint and a preprocessing
+fingerprint. If neither changed, re-analyzing reuses the existing results
+without re-running Whisper/OCR/scenes; changing e.g. `SCENE_THRESHOLD` or
+`WHISPER_MODEL` invalidates them and triggers a fresh run.
+
+**Privacy:** nothing leaves the PC — no uploads, no telemetry, no cloud
+inference. Transcript/OCR/visual documents are local analysis artifacts only.
+
+## Frontend (Phase 4)
 
 The single-page UI runs the full upload → preprocess flow:
 
@@ -304,10 +417,17 @@ The single-page UI runs the full upload → preprocess flow:
 - **Prepare for analysis** queues preprocessing; the card live-updates a
   progress bar (1 s polling) while the worker runs
 - when **prepared**: poster thumbnail, analysis-copy specs, audio-track
-  status, and an enabled **Generate explanation** button (pipeline work of
-  later phases — it does not fake output)
-- project history shows status tags incl. `preprocessing`/`prepared`;
-  **View** opens details, **Delete** removes record + files
+  status, and an **Analyze video** button (Phase 4)
+- during analysis: live progress bar with the current stage label (Scene
+  detection → Speech recognition → OCR → Visual analysis → Timeline → QC)
+- when **analyzed**: results panel with detected language, scene count,
+  speech/OCR/visual status, processing time, warnings, and a per-scene
+  timeline (time range, speech/OCR presence, info-density score,
+  representative frame) — plus the **Generate explanation** button
+  (pipeline work of later phases — it does not fake output)
+- project history shows status tags incl. `preprocessing`/`prepared`/
+  `analyzing`/`analyzed`; **View** opens details, **Delete** removes
+  record + files
 
 Backend validation is authoritative — the client checks are only UX.
 
@@ -317,16 +437,23 @@ Structured lines: `timestamp | level | module | message | project=… | job=…`
 `logs/app.log` for everything, `logs/errors.log` for errors only, both
 auto-rotating. Project ids are attached via context; secrets are never logged.
 
-## Phase 3 limitations (honest)
+## Phase 4 limitations (honest)
 
-- No AI processing: the Generate button is intentionally inert until the
-  pipeline stages land (no fake narration, no placeholder MP4s).
-- Preprocessing covers **analysis assets only**: no scene detection,
-  no speech-to-text, no OCR/vision yet (Phase 4 work).
+- **No story understanding / script / TTS / render yet**: the Generate
+  button is intentionally inert (no fake narration, no placeholder MP4s).
+- STT and OCR depend on optional local installs (Whisper model, Tesseract).
+  Until then those stages report `unavailable`/`skipped` — the pipeline
+  still completes with scenes, visual metadata and timeline.
+- Visual analysis is deterministic metadata (brightness/blur/complexity),
+  **not** object/scene descriptions — no hallucinated claims. A small local
+  vision model can be plugged in later via `LocalVisionProvider`.
 - The worker queue is in-process: jobs do not survive a backend restart
-  (a queued row would remain `queued`; re-run preprocessing to retry).
-- Upload/preprocess progress is honest but stage-weighted: byte-based for
-  the transfer, duration-weighted for each FFmpeg step.
+  (a queued row would remain `queued`; re-run analyze to retry; a stale
+  `analyzing` project is auto-recovered to `prepared` on the next call).
+- Progress is honest but stage-weighted: byte-based for the transfer,
+  duration-weighted for each FFmpeg step, frame/segment-based per AI stage.
+- Real-FFmpeg integration tests skip when FFmpeg is absent (they run on
+  your PC); the deterministic fake-binary suite covers the full lifecycle.
 
 ## Roadmap
 
@@ -334,13 +461,15 @@ auto-rotating. Project ids are attached via context; secrets are never logged.
    detection, UI scaffold, tests, docs.
 2. **Phase 2 (done)** — upload & validation engine: streaming storage,
    SHA-256 fingerprints, FFprobe metadata, READY/FAILED lifecycle.
-3. **Phase 3 (this phase)** — preprocessing & analysis assets (optimized
-   copy, thumbnail, 16 kHz WAV) + single-job background worker.
-4. **Phase 4** — scene detection, speech-to-text, OCR, vision + story
-   understanding (local models).
-5. **Phase 5** — script generation, TTS narration, subtitle sync, FFmpeg
-   mixing + render.
-6. **Phase 6** — quality control, queue hardening, cleanup polish.
+3. **Phase 3 (done)** — preprocessing & analysis assets (optimized copy,
+   thumbnail, 16 kHz WAV) + single-job background worker.
+4. **Phase 4 (this phase)** — on-device analysis: scene detection, STT,
+   OCR, deterministic visual metadata, timeline alignment + context
+   aggregation → ANALYZED.
+5. **Phase 5** — story understanding, duration selection, script
+   generation, TTS narration, subtitle sync.
+6. **Phase 6** — audio mixing, FFmpeg rendering, quality control, queue
+   hardening, cleanup polish.
 
 See `docs/architecture.md` for the full pipeline design.
 
@@ -356,8 +485,11 @@ See `docs/architecture.md` for the full pipeline design.
 | Upload stalls / interrupted                    | No partial file is kept; simply retry (a FAILED row shows the error) |
 | Preprocessing fails (`FFmpeg failed…`)         | Check `logs/errors.log`; the project returns to READY — retry, or lower `ANALYSIS_WIDTH`/`ANALYSIS_FPS` for very large videos |
 | Preprocessing times out                        | Raise `PREPROCESS_TIMEOUT_SECONDS` (per-step cap)                    |
-| `409 job_conflict`                             | A preprocess job is already running for that project — wait          |
-| Project stuck at `preprocessing` after restart | In-process queue lost the job; start preprocessing again             |
+| `409 job_conflict`                             | A preprocess/analysis job is already running for that project — wait |
+| Analysis: “Whisper model not installed”        | Run `scripts\download_whisper_model.bat tiny` once (no API key); analysis still completes without speech |
+| Analysis: “OCR unavailable / Tesseract…”       | `winget install UB-Mannheim.TesseractOCR`, or set `TESSERACT_PATH`; analysis still completes without OCR |
+| Analysis fails (scene detection)               | Check `logs/errors.log`; Phase 3 assets are kept and the project returns to PREPARED — retry Analyze |
+| Project stuck at `preprocessing`/`analyzing` after restart | In-process queue lost the job; restart the stage (a stale analyzing project auto-recovers) |
 | Port 8000 busy                                 | Change `BACKEND_PORT` in `.env`                                      |
 
 ## Security foundations

@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 
+from app.ai.ocr import tesseract_available
+from app.ai.stt import whisper_model_installed, whisper_package_installed
 from app.api.deps import (
     get_database,
     get_ffmpeg_service,
@@ -125,11 +127,46 @@ def system_status(
                 "audio_channels": settings.audio_channels,
                 "preprocess_timeout_seconds": settings.preprocess_timeout_seconds,
             },
-            "phase": "3",
+            "analysis": {
+                "scene_detection": {
+                    "engine": "ffmpeg-select",
+                    "available": ff.available,
+                    "note": "Built-in FFmpeg scene filter (no extra package).",
+                },
+                "speech_to_text": {
+                    "package": "installed" if whisper_package_installed() else "not_installed",
+                    "model": (
+                        "ready" if whisper_model_installed(settings) else "not_installed"
+                    ),
+                    "model_name": settings.whisper_model,
+                    "device": settings.whisper_device,
+                    "compute_type": settings.whisper_compute_type,
+                    "language_mode": settings.whisper_language_mode,
+                },
+                "ocr": {
+                    "available": tesseract_available(settings),
+                    "binary": None,
+                    "setup_hint": None,
+                },
+                "visual": {
+                    "provider": "deterministic",
+                    "note": "Brightness/blur/complexity via PIL; a local VLM can be plugged in later.",
+                },
+                "settings": {
+                    "whisper_model": settings.whisper_model,
+                    "scene_threshold": settings.scene_threshold,
+                    "min_scene_duration_seconds": settings.min_scene_duration_seconds,
+                    "max_scenes": settings.max_scenes,
+                    "ocr_enabled": settings.ocr_enabled,
+                    "ocr_frame_limit": settings.ocr_frame_limit,
+                    "visual_analysis_enabled": settings.visual_analysis_enabled,
+                },
+            },
+            "phase": "4",
             "message": (
-                "Phase 3 preprocessing: READY videos become PREPARED with "
-                "analysis assets (low-res copy, poster thumbnail, 16 kHz "
-                "WAV) built by a single background worker. AI analysis and "
-                "generation are connected in later phases."
+                "Phase 4 local analysis: PREPARED videos become ANALYZED with "
+                "scene boundaries, speech-to-text, OCR, deterministic visual "
+                "metadata, and an aligned timeline - all on-device, no cloud "
+                "APIs. Missing models (whisper/tesseract) degrade gracefully."
             ),
         }

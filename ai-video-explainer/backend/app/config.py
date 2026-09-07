@@ -47,7 +47,7 @@ class Settings(BaseSettings):
 
     # Application -------------------------------------------------------
     app_name: str = "Local AI Video Explainer"
-    app_version: str = "0.3.0"
+    app_version: str = "0.4.0"
     environment: str = "development"
 
     # Servers -----------------------------------------------------------
@@ -97,6 +97,38 @@ class Settings(BaseSettings):
     #: Upper bound for one ffmpeg preprocessing step (analysis copy,
     #: thumbnail or audio extraction) on a large video.
     preprocess_timeout_seconds: int = 600
+
+    # Phase 4 - local analysis -------------------------------------------
+    #: Upper bound for one analysis stage (scene detection pass, whisper
+    #: transcription, OCR batch, visual pass) on a large video.
+    analysis_timeout_seconds: int = 1800
+
+    # Speech-to-text (faster-whisper, CPU-only). The model is lazy-loaded
+    # when an analysis job starts and released afterwards - the web server
+    # must not hold hundreds of MB while idle.
+    whisper_model: str = "tiny"  # "tiny" | "base" (CPU-friendly defaults only)
+    whisper_device: str = "cpu"
+    whisper_compute_type: str = "int8"
+    # "preferred": hint Whisper with the project's UI language but let it
+    # correct itself; "auto": pure auto-detection; "forced": force the
+    # project language (used when the user knows the audio language).
+    whisper_language_mode: str = "preferred"
+
+    # Scene detection (FFmpeg scene filter - deterministic, no extra deps)
+    scene_threshold: float = 0.3       # 0..1: lower = more scene changes
+    min_scene_duration_seconds: float = 2.0
+    max_scenes: int = 500
+
+    # OCR (Tesseract)
+    ocr_enabled: bool = True
+    #: Cap on how many representative frames are OCR'd (they are processed
+    #: in scene order, so early scenes win when the cap is hit).
+    ocr_frame_limit: int = 60
+    tesseract_path: Path | None = None  # None -> discover on PATH
+
+    # Visual frame analysis (deterministic PIL metadata by default; a local
+    # vision model can be plugged in later via LocalVisionProvider).
+    visual_analysis_enabled: bool = True
 
     # Storage (relative -> resolved against base_dir by the validator) ---
     base_dir: Path = PROJECT_ROOT
@@ -180,6 +212,81 @@ class Settings(BaseSettings):
     def _audio_rate_positive(cls, value: int) -> int:
         if value < 8000:
             raise ValueError("audio_sample_rate must be >= 8000")
+        return value
+
+    @field_validator("whisper_model")
+    @classmethod
+    def _whisper_model_allowed(cls, value: str) -> str:
+        value = value.strip().lower()
+        allowed = {"tiny", "base"}
+        if value not in allowed:
+            raise ValueError(
+                f"whisper_model must be one of {sorted(allowed)} "
+                "(CPU-friendly sizes only on the 8 GB target)"
+            )
+        return value
+
+    @field_validator("whisper_device")
+    @classmethod
+    def _whisper_device_allowed(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value not in {"cpu", "cuda", "auto"}:
+            raise ValueError("whisper_device must be 'cpu', 'cuda' or 'auto'")
+        return value
+
+    @field_validator("whisper_compute_type")
+    @classmethod
+    def _whisper_compute_allowed(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value not in {"int8", "int8_float16", "float16", "float32"}:
+            raise ValueError(
+                "whisper_compute_type must be int8, int8_float16, float16 or float32"
+            )
+        return value
+
+    @field_validator("whisper_language_mode")
+    @classmethod
+    def _whisper_language_mode_allowed(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value not in {"preferred", "auto", "forced"}:
+            raise ValueError(
+                "whisper_language_mode must be 'preferred', 'auto' or 'forced'"
+            )
+        return value
+
+    @field_validator("scene_threshold")
+    @classmethod
+    def _scene_threshold_range(cls, value: float) -> float:
+        if not 0.0 < value <= 1.0:
+            raise ValueError("scene_threshold must be in (0, 1]")
+        return value
+
+    @field_validator("min_scene_duration_seconds")
+    @classmethod
+    def _min_scene_duration_positive(cls, value: float) -> float:
+        if value < 0.1:
+            raise ValueError("min_scene_duration_seconds must be >= 0.1")
+        return value
+
+    @field_validator("max_scenes")
+    @classmethod
+    def _max_scenes_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("max_scenes must be >= 1")
+        return value
+
+    @field_validator("ocr_frame_limit")
+    @classmethod
+    def _ocr_frame_limit_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("ocr_frame_limit must be >= 1")
+        return value
+
+    @field_validator("analysis_timeout_seconds")
+    @classmethod
+    def _analysis_timeout_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("analysis_timeout_seconds must be >= 1")
         return value
 
     @field_validator("allowed_video_extensions")

@@ -183,6 +183,78 @@ class AssetNotFoundError(ExplainerError):
     default_message = "The requested asset is not available for this project."
 
 
+class AnalysisNotReadyError(ExplainerError):
+    """Analysis requires a PREPARED project (preprocessing must run first)."""
+
+    status_code = 409
+    code = "analysis_not_ready"
+    default_message = (
+        "This project cannot be analyzed yet. Run preprocessing first "
+        "(Prepare for analysis) to build its analysis assets."
+    )
+
+
+class AnalysisConflictError(ExplainerError):
+    """An analysis job is already queued or running for this project."""
+
+    status_code = 409
+    code = "analysis_already_running"
+    default_message = "Analysis is already running for this project."
+
+
+class WhisperUnavailableError(ExplainerError):
+    """faster-whisper is not installed (or could not be imported)."""
+
+    status_code = 503
+    code = "whisper_unavailable"
+    default_message = (
+        "Speech-to-text is not available: the faster-whisper package is "
+        "not installed. Run 'pip install faster-whisper' and restart the "
+        "backend. The rest of the analysis still runs."
+    )
+
+
+class WhisperModelMissingError(ExplainerError):
+    """The configured Whisper model files are not present locally."""
+
+    status_code = 503
+    code = "model_download_required"
+    default_message = (
+        "The Whisper model is not installed. See the README ("
+        "'Phase 4 - first-run model setup') for the one-time download "
+        "command; no API key is needed. Analysis continues without speech "
+        "recognition until the model is installed."
+    )
+
+
+class TesseractUnavailableError(ExplainerError):
+    """The Tesseract binary or pytesseract package is missing."""
+
+    status_code = 503
+    code = "tesseract_unavailable"
+    default_message = (
+        "OCR is not available: Tesseract is not installed. Install it "
+        "(e.g. 'winget install UB-Mannheim.TesseractOCR' on Windows) and "
+        "restart the backend. The rest of the analysis still runs."
+    )
+
+
+class SceneDetectionError(ExplainerError):
+    """FFmpeg scene detection failed or produced unusable output."""
+
+    status_code = 500
+    code = "scene_detection_failed"
+    default_message = "Scene detection failed."
+
+
+class AnalysisError(ExplainerError):
+    """The composite Phase 4 analysis job failed as a whole."""
+
+    status_code = 500
+    code = "analysis_failed"
+    default_message = "Video analysis failed."
+
+
 class NotInPhase1Error(ExplainerError):
     """Feature is deliberately not implemented yet (scope guard).
 

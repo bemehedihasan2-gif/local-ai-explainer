@@ -1,6 +1,11 @@
-# Runtime dependencies - Phase 2 (all free / open source, no cloud APIs)
+# Runtime dependencies - all free / open source, no cloud APIs
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9   # multipart/form-data uploads (POST /api/projects/upload)
 pydantic>=2.7,<3.0
 pydantic-settings>=2.2,<3.0
+
+# Phase 4 - local analysis (CPU-only)
+faster-whisper>=1.0.0   # speech-to-text; model files are NOT bundled (see README)
+pytesseract             # OCR driver - also needs the Tesseract binary installed
+Pillow                  # deterministic visual frame metadata (no numpy/OpenCV)

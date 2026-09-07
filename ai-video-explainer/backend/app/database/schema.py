@@ -63,6 +63,34 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status
     ON processing_jobs (status);
 CREATE INDEX IF NOT EXISTS idx_jobs_project_status
     ON processing_jobs (project_id, status);
+
+CREATE TABLE IF NOT EXISTS analysis_results (
+    id                       TEXT PRIMARY KEY,
+    project_id               TEXT NOT NULL
+                             REFERENCES projects (id) ON DELETE CASCADE,
+    status                   TEXT NOT NULL DEFAULT 'queued',
+    current_stage            TEXT,
+    started_at               TEXT,
+    completed_at             TEXT,
+    detected_language        TEXT,
+    language_probability     REAL,
+    scene_count              INTEGER,
+    transcript_available     INTEGER,
+    ocr_available            INTEGER,
+    visual_provider          TEXT,
+    processing_seconds       REAL,
+    config_fingerprint       TEXT,
+    preprocessing_fingerprint TEXT,
+    error_message            TEXT,
+    warnings                 TEXT,
+    created_at               TEXT NOT NULL,
+    updated_at               TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_analysis_project_id
+    ON analysis_results (project_id);
+CREATE INDEX IF NOT EXISTS idx_analysis_project_status
+    ON analysis_results (project_id, status);
 """
 
 #: Columns added after the initial Phase 1 release, applied by

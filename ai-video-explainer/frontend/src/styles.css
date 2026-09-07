@@ -697,6 +697,111 @@ td.filename {
 
 .muted { color: var(--muted); }
 .mt-12 { margin-top: 12px; }
+
+/* ------------------------------------------------------------------ */
+/*  Phase 4: analysis results panel                                    */
+/* ------------------------------------------------------------------ */
+
+.analysis-panel {
+  border-top: 1px dashed var(--border);
+  padding-top: 14px;
+}
+
+.panel-title {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 14px 0 8px;
+}
+
+.panel-title:first-child {
+  margin-top: 0;
+}
+
+.warn-box {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn, #b7791f);
+  background: var(--bg-soft, rgba(255, 193, 7, 0.06));
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 12px;
+  font-size: 12.5px;
+}
+
+.warn-box ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.warn-box li + li {
+  margin-top: 3px;
+}
+
+.scene-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.scene-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  background: var(--bg-soft, transparent);
+}
+
+.scene-frame {
+  width: 96px;
+  height: 54px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.scene-frame-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.scene-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.scene-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.scene-meta {
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.dot-sep {
+  margin: 0 6px;
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+.tag-density {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
 .flex-between {
   display: flex;
   align-items: center;

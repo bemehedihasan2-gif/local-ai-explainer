@@ -1,4 +1,6 @@
 import type {
+  AnalysisRun,
+  AnalyzeResponse,
   ApiErrorBody,
   CreateProjectPayload,
   Job,
@@ -6,6 +8,7 @@ import type {
   Project,
   ProjectStatus,
   SystemStatus,
+  TimelineDocument,
   UploadProgress,
 } from "./types";
 
@@ -131,11 +134,21 @@ export const api = {
   startPreprocess: (id: string) =>
     request<Job>(`/api/projects/${id}/preprocess`, { method: "POST" }),
   listJobs: (id: string) => request<Job[]>(`/api/projects/${id}/jobs`),
+  startAnalysis: (id: string) =>
+    request<AnalyzeResponse>(`/api/projects/${id}/analyze`, { method: "POST" }),
+  getAnalysis: (id: string) => request<AnalysisRun>(`/api/projects/${id}/analysis`),
+  getTimeline: (id: string) =>
+    request<TimelineDocument>(`/api/projects/${id}/timeline`),
 };
 
 /** Browser URL for a project's poster thumbnail (or null pre-PREPARED). */
 export function thumbnailUrl(project: Pick<Project, "id" | "thumbnail_path">): string | null {
   return project.thumbnail_path ? `${BASE}/api/projects/${project.id}/thumbnail` : null;
+}
+
+/** Browser URL for one scene's representative frame (Phase 4). */
+export function analysisFrameUrl(projectId: string, sceneId: number): string {
+  return `${BASE}/api/projects/${projectId}/analysis/frames/${sceneId}`;
 }
 
 /** Narrow a free-form project status into a known value. */
@@ -147,6 +160,8 @@ export function normalizeStatus(value: string): ProjectStatus {
     "ready",
     "preprocessing",
     "prepared",
+    "analyzing",
+    "analyzed",
     "queued",
     "processing",
     "completed",

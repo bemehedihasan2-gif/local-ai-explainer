@@ -20,12 +20,15 @@ from __future__ import annotations
 
 import queue
 import threading
+from datetime import datetime, timezone
 from typing import Any
 
 from app.database.connection import Database
+from app.database.repositories.analysis import AnalysisRepository
 from app.database.repositories.jobs import JobRepository
 from app.database.repositories.projects import ProjectRepository
-from app.models.enums import JobStatus, ProjectStatus
+from app.models.enums import JobStatus, PipelineStage, ProjectStatus
+from app.services.analysis import AnalysisService, _STAGE_LABELS
 from app.services.ffmpeg import FfmpegService
 from app.services.preprocess import PreprocessService
 from app.services.storage import StorageService
@@ -143,40 +146,24 @@ class ProcessingWorker:
             try:
                 # Fail fast with a clean, recorded error when FFmpeg is gone.
                 ffmpeg_status = self._ffmpeg.require()
-                service = PreprocessService(self._settings, self._storage)
 
-                def tick(progress: float) -> None:
-                    jobs.update_progress(job_id, progress)
-                    projects.update(project_id, progress=progress)
-
-                assets = service.run(
-                    project,
-                    str(ffmpeg_status.ffmpeg_path),
-                    progress_callback=tick,
-                )
-                try:
-                    projects.update(
-                        project_id,
-                        status=ProjectStatus.PREPARED,
-                        progress=100.0,
-                        error_message=None,
-                        **assets,
+                if job["stage"] == PipelineStage.PREPROCESS.value:
+                    self._run_preprocess(
+                        projects, jobs, project_id, job_id, project,
+                        str(ffmpeg_status.ffmpeg_path),
                     )
-                    jobs.update_status(
-                        job_id, status=JobStatus.COMPLETED, progress=100.0
+                elif job["stage"] == PipelineStage.ANALYSIS.value:
+                    self._run_analysis(
+                        projects, jobs, project_id, job_id, project,
+                        str(ffmpeg_status.ffmpeg_path),
                     )
-                except ProjectNotFoundError:
-                    # Project (and its cascade-deleted job row) vanished
-                    # while we were processing; nothing to persist.
-                    logger.info(
-                        "Project %s was deleted during job %s; dropping result.",
-                        project_id, job_id,
+                else:  # pragma: no cover - future stages not wired yet
+                    raise ExplainerError(
+                        f"Pipeline stage '{job['stage']}' is not implemented yet."
                     )
-                    return
-                logger.info("Job %s completed; project %s PREPARED.", job_id, project_id)
             except ExplainerError as exc:
                 self._fail(
-                    projects, jobs, project_id, job_id,
+                    projects, jobs, project_id, job_id, job["stage"],
                     message=exc.message,
                 )
             except Exception:  # noqa: BLE001 - worker must never die
@@ -185,25 +172,124 @@ class ProcessingWorker:
                     job_id, project_id,
                 )
                 self._fail(
-                    projects, jobs, project_id, job_id,
-                    message="Preprocessing failed unexpectedly; check backend/logs/errors.log.",
+                    projects, jobs, project_id, job_id, job["stage"],
+                    message=(
+                        "Processing failed unexpectedly; "
+                        "check backend/logs/errors.log."
+                    ),
                 )
 
-    @staticmethod
+    # ------------------------------------------------------------------
+    # Stage runners
+    # ------------------------------------------------------------------
+    def _run_preprocess(
+        self, projects, jobs, project_id, job_id, project, ffmpeg_path,
+    ) -> None:
+        service = PreprocessService(self._settings, self._storage)
+
+        def tick(progress: float) -> None:
+            jobs.update_progress(job_id, progress)
+            projects.update(project_id, progress=progress)
+
+        assets = service.run(project, ffmpeg_path, progress_callback=tick)
+        try:
+            projects.update(
+                project_id,
+                status=ProjectStatus.PREPARED,
+                progress=100.0,
+                error_message=None,
+                **assets,
+            )
+            jobs.update_status(job_id, status=JobStatus.COMPLETED, progress=100.0)
+        except ProjectNotFoundError:
+            # Project (and its cascade-deleted job row) vanished mid-run.
+            logger.info(
+                "Project %s was deleted during job %s; dropping result.",
+                project_id, job_id,
+            )
+            return
+        logger.info("Job %s completed; project %s PREPARED.", job_id, project_id)
+
+    def _run_analysis(
+        self, projects, jobs, project_id, job_id, project, ffmpeg_path,
+    ) -> None:
+        analysis_repo = AnalysisRepository(self._db)
+        run = analysis_repo.latest_for_project(project_id)
+        run_id = run["id"] if run and run["status"] in ("queued", "running") else None
+        if run_id:
+            analysis_repo.update(
+                run_id,
+                status="running",
+                started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+        analysis = AnalysisService(self._settings, self._storage)
+
+        def tick(progress: float, stage: str | None = None) -> None:
+            jobs.update_progress(job_id, progress)
+            projects.update(project_id, progress=progress)
+            if run_id and stage:
+                analysis_repo.update(
+                    run_id,
+                    current_stage=_STAGE_LABELS.get(stage, stage),
+                )
+
+        summary = analysis.run(project, ffmpeg_path, progress_callback=tick)
+        try:
+            projects.update(
+                project_id,
+                status=ProjectStatus.ANALYZED,
+                progress=100.0,
+                error_message=None,
+            )
+            if run_id:
+                analysis_repo.update(
+                    run_id,
+                    status="completed",
+                    current_stage=None,
+                    completed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    detected_language=summary.get("detected_language"),
+                    language_probability=summary.get("language_probability"),
+                    scene_count=summary.get("scene_count"),
+                    transcript_available=summary.get("transcript_available"),
+                    ocr_available=summary.get("ocr_available"),
+                    visual_provider=summary.get("visual_provider"),
+                    processing_seconds=summary.get("processing_seconds"),
+                    warnings=summary.get("warnings", []),
+                )
+            jobs.update_status(job_id, status=JobStatus.COMPLETED, progress=100.0)
+        except ProjectNotFoundError:
+            logger.info(
+                "Project %s was deleted during job %s; dropping result.",
+                project_id, job_id,
+            )
+            return
+        logger.info("Job %s completed; project %s ANALYZED.", job_id, project_id)
+
     def _fail(
+        self,
         projects: ProjectRepository,
         jobs: JobRepository,
         project_id: str,
         job_id: str,
+        stage: str,
         *,
         message: str,
     ) -> None:
-        """Record a job failure and return the project to READY for retry."""
+        """Record a job failure; return the project to its retry state.
+
+        Preprocess failure -> READY (assets gone). Analysis failure ->
+        PREPARED (Phase 3 assets are preserved; only Phase 4 artifacts are
+        cleared) so Analyze can be retried without re-uploading.
+        """
+        return_status = (
+            ProjectStatus.READY if stage == PipelineStage.PREPROCESS.value
+            else ProjectStatus.PREPARED
+        )
         try:
             try:
                 projects.update(
                     project_id,
-                    status=ProjectStatus.READY,
+                    status=return_status,
                     progress=100.0,
                     error_message=message,
                 )
@@ -212,6 +298,17 @@ class ProcessingWorker:
                     "Project %s disappeared during job failure handling.",
                     project_id,
                 )
+            if stage == PipelineStage.ANALYSIS.value:
+                AnalysisService(self._settings, self._storage).cleanup_artifacts(project_id)
+                run = AnalysisRepository(self._db).latest_for_project(project_id)
+                if run and run["status"] in ("queued", "running"):
+                    AnalysisRepository(self._db).update(
+                        run["id"],
+                        status="failed",
+                        current_stage=None,
+                        completed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        error_message=message,
+                    )
             jobs.update_status(
                 job_id, status=JobStatus.FAILED, error_message=message
             )

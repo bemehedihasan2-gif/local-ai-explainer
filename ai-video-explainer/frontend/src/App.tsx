@@ -5,15 +5,23 @@ import {
   type ChangeEvent,
   type DragEvent,
 } from "react";
-import { api, ApiError, thumbnailUrl, uploadVideo } from "./api";
+import {
+  analysisFrameUrl,
+  api,
+  ApiError,
+  thumbnailUrl,
+  uploadVideo,
+} from "./api";
 import {
   DURATIONS,
   LANGUAGES,
   SUPPORTED_EXTENSIONS,
+  type AnalysisRun,
   type DurationMinutes,
   type Language,
   type Project,
   type SystemStatus,
+  type TimelineDocument,
 } from "./types";
 
 /* ------------------------------------------------------------------ */
@@ -33,11 +41,15 @@ const STATUS_LABEL: Record<string, string> = {
   ready: "Ready",
   preprocessing: "Preprocessing",
   prepared: "Prepared",
+  analyzing: "Analyzing",
+  analyzed: "Analyzed",
   queued: "Queued",
   processing: "Processing",
   completed: "Completed",
   failed: "Failed",
 };
+
+
 
 interface Notice {
   kind: "info" | "warn" | "error";
@@ -86,17 +98,18 @@ function extensionOf(name: string): string {
 const PIPELINE: { name: string; phase: string; done?: boolean }[] = [
   { name: "Video Upload", phase: "Phase 2", done: true },
   { name: "Preprocessing", phase: "Phase 3", done: true },
-  { name: "Scene Detection", phase: "Phase 4" },
-  { name: "Speech-to-Text", phase: "Phase 4" },
-  { name: "OCR", phase: "Phase 4" },
-  { name: "Vision Understanding", phase: "Phase 4" },
-  { name: "Story Understanding", phase: "Phase 4" },
+  { name: "Scene Detection", phase: "Phase 4", done: true },
+  { name: "Speech-to-Text", phase: "Phase 4", done: true },
+  { name: "OCR", phase: "Phase 4", done: true },
+  { name: "Vision Understanding", phase: "Phase 4", done: true },
+  { name: "Timeline Alignment", phase: "Phase 4", done: true },
+  { name: "Story Understanding", phase: "Phase 5" },
   { name: "Duration Selection", phase: "Phase 5" },
   { name: "Script Generation", phase: "Phase 5" },
   { name: "TTS Narration", phase: "Phase 5" },
   { name: "Subtitle Generation", phase: "Phase 5" },
   { name: "Audio Mixing", phase: "Phase 6" },
-  { name: "FFmpeg Rendering", phase: "Phase 5" },
+  { name: "FFmpeg Rendering", phase: "Phase 6" },
   { name: "Quality Control", phase: "Phase 6" },
 ];
 
@@ -120,6 +133,8 @@ export default function App() {
   const [uploadPercent, setUploadPercent] = useState<number | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [view, setView] = useState<Project | null>(null);
+  const [analysis, setAnalysis] = useState<AnalysisRun | null>(null);
+  const [timeline, setTimeline] = useState<TimelineDocument | null>(null);
 
   const [busyDelete, setBusyDelete] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -261,8 +276,8 @@ export default function App() {
   const generate = (project: Project) => {
     setNotice({
       kind: "info",
-      title: "Generation is planned for Phases 4-6",
-      body: `"${project.original_filename}" is prepared: its analysis assets are ready. Scene analysis, script generation, narration (TTS), subtitles and rendering arrive in later phases — no fake processing is run here.`,
+      title: "Generation is planned for Phases 5-6",
+      body: `"${project.original_filename}" is analyzed: scenes, speech, OCR and visual metadata are understood. Story understanding, script generation, narration (TTS), subtitles and rendering arrive in later phases — no fake processing is run here.`,
     });
   };
 
@@ -289,16 +304,59 @@ export default function App() {
     }
   };
 
-  // While any project is being preprocessed, poll project + history so the
-  // progress bar and status tags stay honest (1 s cadence, cheap reads).
-  const anyPreprocessing = projects.some((p) => p.status === "preprocessing");
+  /* ---- Phase 4 analysis ------------------------------------------- */
+
+  const [analyzeBusy, setAnalyzeBusy] = useState(false);
+
+  const startAnalysis = async (project: Project) => {
+    setAnalyzeBusy(true);
+    setNotice(null);
+    try {
+      const response = await api.startAnalysis(project.id);
+      if (response.idempotent) {
+        setNotice({
+          kind: "info",
+          title: "Analysis already complete",
+          body: response.message ?? "Existing results are still valid; nothing was re-run.",
+        });
+      }
+      setView(await api.getProject(project.id)); // -> analyzing
+      setProjects(await api.listProjects());
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : String(err);
+      setNotice({
+        kind: "error",
+        title: "Could not start analysis",
+        body: message,
+      });
+    } finally {
+      setAnalyzeBusy(false);
+    }
+  };
+
+  // While any project is being preprocessed/analyzed, poll project + history
+  // so the progress bar and status tags stay honest (1 s cadence, cheap).
+  const anyProcessing = projects.some(
+    (p) => p.status === "preprocessing" || p.status === "analyzing",
+  );
   useEffect(() => {
-    if (!anyPreprocessing && view?.status !== "preprocessing") return;
+    const activeView =
+      view && (view.status === "preprocessing" || view.status === "analyzing");
+    if (!anyProcessing && !activeView) return;
     const timer = window.setInterval(() => {
       void (async () => {
         try {
-          if (view && view.status === "preprocessing") {
-            setView(await api.getProject(view.id));
+          if (activeView) {
+            const fresh = await api.getProject(view!.id);
+            setView(fresh);
+            if (fresh.status === "analyzing") {
+              // Live stage label (scene detection, speech, OCR, ...).
+              try {
+                setAnalysis(await api.getAnalysis(fresh.id));
+              } catch {
+                // run row may not be visible yet; next tick retries
+              }
+            }
           }
           setProjects(await api.listProjects());
         } catch {
@@ -307,7 +365,32 @@ export default function App() {
       })();
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [anyPreprocessing, view]);
+  }, [anyProcessing, view]);
+
+  // When a project reaches ANALYZED, load its run summary + timeline once.
+  const analyzedId = view?.status === "analyzed" ? view.id : null;
+  useEffect(() => {
+    if (!analyzedId) {
+      setAnalysis(null);
+      setTimeline(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const run = await api.getAnalysis(analyzedId);
+        if (cancelled) return;
+        setAnalysis(run);
+        const doc = await api.getTimeline(analyzedId);
+        if (!cancelled) setTimeline(doc);
+      } catch {
+        // Assets may be missing (deleted project); leave the panel empty.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [analyzedId]);
 
   /* ---- history ---------------------------------------------------- */
 
@@ -527,7 +610,11 @@ export default function App() {
                 <ProjectCard
                   project={view}
                   prepBusy={prepBusy}
+                  analyzeBusy={analyzeBusy}
+                  analysis={analysis}
+                  timeline={timeline}
                   onStartPreprocess={() => void startPreprocess(view)}
+                  onStartAnalysis={() => void startAnalysis(view)}
                   onGenerate={() => generate(view)}
                 />
               )}
@@ -536,7 +623,7 @@ export default function App() {
                 <div className="flex-between">
                   <h2>Pipeline roadmap</h2>
                   <span className="chip-status">
-                    <span className="dot" /> upload + preprocess live
+                    <span className="dot" /> upload · preprocess · analysis live
                   </span>
                 </div>
                 <ul className="pipeline">
@@ -635,10 +722,10 @@ export default function App() {
           </section>
 
           <footer className="footer-note">
-            Local AI Video Explainer — Phase 3: upload & validation + preprocessing worker.
-            Streaming uploads, SHA-256 fingerprints, FFprobe validation, analysis assets
-            (copy / poster / 16 kHz WAV), SQLite metadata. No paid APIs, no cloud models,
-            no secrets in source.
+            Local AI Video Explainer — Phase 4: upload, preprocessing and on-device
+            analysis (scene detection, speech-to-text, OCR, visual metadata, aligned
+            timeline). Streaming uploads, SHA-256 fingerprints, SQLite metadata, single
+            background worker. No paid APIs, no cloud models, no secrets in source.
           </footer>
         </>
       )}
@@ -653,12 +740,20 @@ export default function App() {
 function ProjectCard({
   project,
   prepBusy,
+  analyzeBusy,
+  analysis,
+  timeline,
   onStartPreprocess,
+  onStartAnalysis,
   onGenerate,
 }: {
   project: Project;
   prepBusy: boolean;
+  analyzeBusy: boolean;
+  analysis: AnalysisRun | null;
+  timeline: TimelineDocument | null;
   onStartPreprocess: () => void;
+  onStartAnalysis: () => void;
   onGenerate: () => void;
 }) {
   const resolution =
@@ -715,17 +810,23 @@ function ProjectCard({
   }
 
   const thumb = thumbnailUrl(project);
+  const title =
+    project.status === "prepared"
+      ? "Analysis assets ready"
+      : project.status === "preprocessing"
+        ? "Preprocessing video"
+        : project.status === "analyzing"
+          ? "Analyzing video locally"
+          : project.status === "analyzed"
+            ? "Video analyzed"
+            : "Video";
 
   return (
-    <section className={`card ${project.status === "prepared" ? "ready-card" : ""}`}>
+    <section
+      className={`card ${project.status === "prepared" || project.status === "analyzed" ? "ready-card" : ""}`}
+    >
       <div className="flex-between">
-        <h2>
-          {project.status === "prepared"
-            ? "Analysis assets ready"
-            : project.status === "preprocessing"
-              ? "Preprocessing video"
-              : "Video"}
-        </h2>
+        <h2>{title}</h2>
         <span className={`tag tag-${project.status}`}>
           {STATUS_LABEL[project.status] ?? project.status}
         </span>
@@ -797,16 +898,169 @@ function ProjectCard({
       )}
 
       {project.status === "prepared" && (
+        <>
+          {project.error_message && (
+            <p className="field-error" role="alert">
+              A previous analysis failed: {project.error_message} The prepared assets are
+              still intact — you can try Analyze again.
+            </p>
+          )}
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={onStartAnalysis}
+            disabled={analyzeBusy}
+          >
+            {analyzeBusy ? "Queuing…" : "Analyze video"}
+          </button>
+          <p className="hint" style={{ marginTop: 8, marginBottom: 0 }}>
+            Runs the Phase 4 local pipeline: scene detection, speech-to-text,
+            OCR, visual metadata and timeline alignment — all on this PC, no cloud.
+          </p>
+        </>
+      )}
+
+      {project.status === "analyzing" && (
+        <div className="upload-progress" role="progressbar" aria-valuenow={Math.round(project.progress)}>
+          <div className="flex-between">
+            <strong>Analyzing video…</strong>
+            <span className="muted">{Math.round(project.progress)}%</span>
+          </div>
+          <span className="progress-track">
+            <i style={{ width: `${project.progress}%` }} />
+          </span>
+          <p className="hint">
+            {analysis?.current_stage ?? "Working"} — scene detection, speech, OCR and
+            visual passes run one after another on a single worker thread.
+          </p>
+        </div>
+      )}
+
+      {project.status === "analyzed" && (
         <button
           type="button"
           className="btn btn-primary"
           onClick={onGenerate}
-          title="Script generation, narration and rendering arrive in later phases."
+          title="Story understanding, script generation, narration and rendering arrive in later phases."
         >
           Generate explanation
         </button>
       )}
+
+      {project.status === "analyzed" && analysis && (
+        <AnalysisPanel project={project} analysis={analysis} timeline={timeline} />
+      )}
     </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Analysis results: run summary + per-scene timeline                */
+/* ------------------------------------------------------------------ */
+
+function AnalysisPanel({
+  project,
+  analysis: run,
+  timeline,
+}: {
+  project: Project;
+  analysis: AnalysisRun;
+  timeline: TimelineDocument | null;
+}) {
+  const speechLabel =
+    run.transcript_available == null
+      ? "—"
+      : run.transcript_available
+        ? `available${run.detected_language ? ` (${run.detected_language})` : ""}`
+        : "unavailable / skipped";
+  const ocrLabel =
+    run.ocr_available == null ? "—" : run.ocr_available ? "available" : "none (not installed)";
+
+  const summaryRows = [
+    { label: "Detected language", value: run.detected_language ?? "—" },
+    { label: "Scenes", value: run.scene_count != null ? String(run.scene_count) : "—" },
+    { label: "Speech", value: speechLabel },
+    { label: "OCR", value: ocrLabel },
+    { label: "Visual provider", value: run.visual_provider ?? "—" },
+    {
+      label: "Processing time",
+      value: run.processing_seconds != null ? `${run.processing_seconds.toFixed(1)} s` : "—",
+    },
+    { label: "Completed", value: run.completed_at ? formatWhen(run.completed_at) : "—" },
+  ];
+
+  return (
+    <div className="analysis-panel mt-12">
+      <h3 className="panel-title">Analysis results</h3>
+      <div className="kv-grid">
+        {summaryRows.map((row) => (
+          <div className="kv" key={row.label}>
+            <span className="kv-key">{row.label}</span>
+            <span className="kv-value" title={row.value}>
+              {row.value}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {run.warnings.length > 0 && (
+        <div className="warn-box">
+          <strong>Warnings</strong>
+          <ul>
+            {run.warnings.map((warning, i) => (
+              <li key={i}>{warning}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {timeline && timeline.scenes.length > 0 && (
+        <>
+          <h3 className="panel-title">Scene timeline</h3>
+          <div className="scene-list">
+            {timeline.scenes.map((scene) => (
+              <div className="scene-row" key={scene.scene_id}>
+                {scene.representative_frame ? (
+                  <img
+                    className="scene-frame"
+                    src={analysisFrameUrl(project.id, scene.scene_id)}
+                    alt={`Scene ${scene.scene_id} representative frame`}
+                    loading="lazy"
+                  />
+                ) : (
+                  <div className="scene-frame scene-frame-empty" aria-hidden>
+                    no frame
+                  </div>
+                )}
+                <div className="scene-body">
+                  <div className="scene-head">
+                    <strong>Scene #{scene.scene_id}</strong>
+                    <span className="muted">
+                      {clock(scene.start)} → {clock(scene.end)}
+                      <span className="dot-sep">·</span>
+                      {scene.duration.toFixed(1)} s
+                    </span>
+                    <span className="tag tag-density" title="Deterministic evidence score (0-100)">
+                      density {scene.information_density}
+                    </span>
+                  </div>
+                  <div className="scene-meta muted">
+                    Speech: {scene.speech_present ? "available" : "unavailable"}
+                    <span className="dot-sep">·</span>
+                    OCR: {scene.ocr_present ? "available" : "none"}
+                    <span className="dot-sep">·</span>
+                    Visual:{" "}
+                    {scene.visual
+                      ? `brightness ${Math.round(scene.visual.brightness)} · blur ${scene.visual.blur_estimate.toFixed(2)}`
+                      : "—"}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -842,6 +1096,28 @@ function SystemCard({ system }: { system: SystemStatus }) {
       value: system.ffmpeg.available
         ? `ready (${system.ffmpeg.ffmpeg.version ?? "?"})`
         : "not installed — uploads will be rejected",
+    },
+    {
+      label: "Speech-to-text",
+      value: system.analysis.speech_to_text.model === "ready"
+        ? `whisper ${system.analysis.speech_to_text.model_name} ready (${system.analysis.speech_to_text.device})`
+        : `whisper ${system.analysis.speech_to_text.model_name} not installed — speech will be skipped`,
+    },
+    {
+      label: "OCR (Tesseract)",
+      value: system.analysis.ocr.available
+        ? "ready"
+        : "not installed — OCR will be skipped",
+    },
+    {
+      label: "Scene detection",
+      value: system.analysis.scene_detection.available
+        ? `${system.analysis.scene_detection.engine} — ready`
+        : "needs FFmpeg",
+    },
+    {
+      label: "Visual analysis",
+      value: `${system.analysis.visual.provider} (PIL metadata)`,
     },
     { label: "Max upload", value: `${system.limits.max_upload_size_mb} MB` },
     { label: "Supported", value: system.limits.allowed_video_extensions.join(" ") },

@@ -32,6 +32,8 @@ export type ProjectStatus =
   | "ready"
   | "preprocessing"
   | "prepared"
+  | "analyzing"
+  | "analyzed"
   | "queued"
   | "processing"
   | "completed"
@@ -83,6 +85,69 @@ export interface Job {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// Phase 4: one analysis run per project (summary only - transcripts and
+// OCR payloads live in JSON files on disk, never in the API).
+export interface AnalysisRun {
+  id: string;
+  project_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  current_stage: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  detected_language: string | null;
+  language_probability: number | null;
+  scene_count: number | null;
+  transcript_available: boolean | null;
+  ocr_available: boolean | null;
+  visual_provider: string | null;
+  processing_seconds: number | null;
+  error_message: string | null;
+  warnings: string[];
+}
+
+export interface AnalyzeResponse {
+  idempotent: boolean;
+  status: string;
+  analysis_id?: string;
+  job?: Job;
+  analysis?: AnalysisRun;
+  message?: string;
+}
+
+export interface TimelineScene {
+  scene_id: number;
+  start: number;
+  end: number;
+  duration: number;
+  representative_timestamp: number;
+  representative_frame: string | null;
+  speech_present: boolean;
+  speech: unknown[];
+  ocr_present: boolean;
+  ocr: unknown[];
+  visual: {
+    width: number;
+    height: number;
+    brightness: number;
+    blur_estimate: number;
+    complexity: number;
+  } | null;
+  information_density: number;
+}
+
+export interface TimelineDocument {
+  schema_version: number;
+  duration_seconds: number;
+  summary: {
+    scene_count: number;
+    speech_scenes: number;
+    ocr_scenes: number;
+    total_words: number;
+    detected_language: string | null;
+  };
+  scenes: TimelineScene[];
 }
 
 export interface CreateProjectPayload {
@@ -145,6 +210,28 @@ export interface SystemStatus {
     audio_sample_rate: number;
     audio_channels: number;
     preprocess_timeout_seconds: number;
+  };
+  analysis: {
+    scene_detection: { engine: string; available: boolean; note: string };
+    speech_to_text: {
+      package: string;
+      model: string;
+      model_name: string;
+      device: string;
+      compute_type: string;
+      language_mode: string;
+    };
+    ocr: { available: boolean; binary: string | null; setup_hint: string | null };
+    visual: { provider: string; note: string };
+    settings: {
+      whisper_model: string;
+      scene_threshold: number;
+      min_scene_duration_seconds: number;
+      max_scenes: number;
+      ocr_enabled: boolean;
+      ocr_frame_limit: number;
+      visual_analysis_enabled: boolean;
+    };
   };
   phase: string;
   message: string;

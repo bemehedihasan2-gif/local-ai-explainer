@@ -38,7 +38,9 @@ class ProjectStatus(str, Enum):
     READY = "ready"  # valid video + metadata stored, awaiting preprocessing
     PREPROCESSING = "preprocessing"  # Phase 3 worker is building analysis assets
     PREPARED = "prepared"  # analysis copy/thumbnail/audio ready (Phase 3 done)
-    QUEUED = "queued"  # future pipeline stages (Phase 4+)
+    ANALYZING = "analyzing"  # Phase 4 worker is running the local analysis
+    ANALYZED = "analyzed"  # scenes/transcript/ocr/visual/timeline stored (Phase 4 done)
+    QUEUED = "queued"  # future pipeline stages (Phase 5+)
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -58,6 +60,7 @@ class PipelineStage(str, Enum):
 
     UPLOAD = "upload"
     PREPROCESS = "preprocess"
+    ANALYSIS = "analysis"  # Phase 4 composite job: scenes+stt+ocr+visual+timeline
     SCENE_DETECTION = "scene_detection"
     SPEECH_TO_TEXT = "speech_to_text"
     OCR = "ocr"

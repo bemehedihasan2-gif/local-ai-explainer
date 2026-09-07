@@ -15,7 +15,7 @@ video is being read, no full video is ever held in RAM, heavy work is
 file/stream based, and only **one heavy processing job runs at a time**
 (`PROCESSING_CONCURRENCY=1`, enforced by design + future worker).
 
-## 2. Current Phase 3 architecture
+## 2. Current Phase 4 architecture
 
 ```
 frontend (React/Vite/TS)                  backend (FastAPI, Python 3)
@@ -23,32 +23,48 @@ frontend (React/Vite/TS)                  backend (FastAPI, Python 3)
   real progress %, metadata card,           ├─ health         /api/health
   history + details, roadmap                 ├─ projects      /api/projects…
   preprocess button + polling                ├─ preprocess     POST /api/projects/{id}/preprocess
-       │                                     ├─ jobs           GET  /api/projects/{id}/jobs
-       ▼                                     └─ thumbnail      GET  /api/projects/{id}/thumbnail
-  Vite dev proxy /api ──▶ :8000       app/services    uploads (streaming, sha256, dedupe),
+  analyze button + stage progress            ├─ analyze        POST /api/projects/{id}/analyze
+  results panel (summary + scenes)           ├─ analysis       GET  /api/projects/{id}/analysis
+       │                                     ├─ timeline       GET  /api/projects/{id}/timeline
+       ▼                                     ├─ frames         GET  /api/projects/{id}/analysis/frames/{n}
+  Vite dev proxy /api ──▶ :8000              ├─ jobs           GET  /api/projects/{id}/jobs
+                                             └─ thumbnail      GET  /api/projects/{id}/thumbnail
+                                       app/services    uploads (streaming, sha256, dedupe),
                                                        preprocess (analysis copy /
                                                        thumbnail / 16 kHz WAV via FFmpeg),
+                                                       ANALYSIS (composite orchestrator),
+                                                       TIMELINE (alignment + density + QC),
                                                        worker (single-threaded job queue),
                                                        ffmpeg detection, storage
+                                       app/ai          stt.py  (faster-whisper, lazy,
+                                       │                 int8 CPU, model-gated)
+                                       │               ocr.py  (Tesseract, graceful absence)
+                                       │               vision.py (deterministic PIL +
+                                       │                 optional LocalVisionProvider)
                                        app/video       probe.py (FFprobe metadata
                                        │                  + validation rules)
+                                       │               scenes.py (FFmpeg scene filter +
+                                       │                  representative-frame extraction)
                                        ▼
                                        app/database    SQLite (WAL, FK on,
-                                       │                  additive migration P1→P2→P3)
+                                       │                  additive migration P1→P2→P3→P4)
                                        │              data/projects/<id>/
                                        │                input|temp|output
-                                       │                analysis|thumbnails|audio  (P3)
+                                       │                analysis|thumbnails|audio   (P3)
+                                       │                analysis/{metadata,frames}  (P4)
                                        app/models      pydantic schemas
-                                       app/utils       errors/logging/paths
-                                       app/ai          pipeline stubs (unchanged)
+                                       app/utils       errors/logging/paths/fingerprints
 ```
 
 Runtime state: `projects` rows carry all validated media metadata **plus**
 Phase 3 analysis-asset references (relative paths, dimensions, `prepared_at`);
-`processing_jobs` rows carry the worker's stage lifecycle. Large data always
-lives on disk under `data/projects/<id>/` (never RAM). The worker thread is
-started with the app and runs **one job at a time**
-(`PROCESSING_CONCURRENCY=1`).
+`processing_jobs` rows carry the worker's stage lifecycle (`preprocess` /
+`analysis`); `analysis_results` rows carry one summary per analysis run
+(status, stage, detected language, scene count, availability flags, warnings,
+fingerprints). Large data always lives on disk under `data/projects/<id>/`
+(never RAM). The worker thread is started with the app and runs **one job at
+a time** (`PROCESSING_CONCURRENCY=1`); AI models are lazy-loaded when a
+stage starts and released before the next one.
 
 ### 2b. Phase 3 preprocessing & analysis-asset flow
 
@@ -84,6 +100,56 @@ Progress is honest: each FFmpeg step reports media-elapsed-time/duration
 mapped into a fixed weight window; no invented percentages. The poster is
 served to the UI via `GET /api/projects/{id}/thumbnail` (path-safe, relative
 paths only).
+
+### 2c. Phase 4 local analysis flow
+
+```
+User clicks "Analyze video" (project is PREPARED)
+      │
+      ▼
+POST /api/projects/{id}/analyze
+      │   guards: ANALYZING -> 409 · READY -> 409 · unknown -> 404
+      │   ANALYZED + unchanged fingerprints -> 200 idempotent reuse (nothing re-run)
+      │   stale ANALYZING rows (crash) -> auto-recover to PREPARED
+      │   run row (analysis_results) + job row persisted  · project -> analyzing
+      ▼
+Worker queue (same single thread, concurrency=1)
+      │   stage windows: 5% preparing · 25% scenes · 50% STT · 70% OCR
+      │                  82% visual · 92% timeline · 97% QC · 100% finalizing
+      ▼
+SCENE DETECTION (structural)           analysis/metadata/scenes.json
+      │   FFmpeg select='gt(scene,T)' on analysis/analysis.mp4 (no extra
+      │   package, flat RAM); min-duration merge + max-scenes cap
+      ▼
+REPRESENTATIVE FRAMES                  analysis/frames/scene_%03d.jpg
+      │   one decode pass, exact indices (analysis copy has const fps)
+      ▼
+SPEECH-TO-TEXT (graceful)              analysis/metadata/transcript.json
+      │   faster-whisper on audio/audio.wav · lazy load, released after
+      │   preferred language hint + auto-detect · missing model → warning
+      ▼
+OCR (graceful)                         analysis/metadata/ocr.json
+      │   Tesseract on scene frames (capped) · absent binary → warning
+      ▼
+VISUAL ANALYSIS (graceful)             analysis/metadata/visual.json
+      │   deterministic PIL: brightness, blur proxy, complexity, size
+      │   (LocalVisionProvider interface for future small VLMs)
+      ▼
+TIMELINE + CONTEXT AGGREGATION         analysis/metadata/timeline.json
+      │   scene × (overlapping transcript, in-range OCR, representative
+      │   frame, visual metadata, information-density 0-100)
+      ▼
+QUALITY CHECK + MANIFEST               analysis/metadata/analysis_manifest.json
+      │   timestamp validation · warnings · fingerprints · relative paths
+      ▼
+Project -> analyzed (100%), run -> completed, job -> completed
+      │   UI shows summary + per-scene timeline + frames
+
+Failure (structural): run+job failed, Phase 4 artifacts removed, project
+-> prepared with error_message (Phase 3 assets preserved) → Analyze retry.
+Graceful stage failures (no Whisper model / no Tesseract / corrupt audio)
+become warnings; the pipeline still finishes.
+```
 ```
 User selects video
       │
@@ -156,43 +222,50 @@ Video Upload ──▶ Preprocessing ──▶ Scene Detection ──▶ Speech-
                         Quality Control (duration, audio level, subtitle sync)
 ```
 
-### Stage ownership & service interfaces (Phase 3: upload + preprocessing real, AI stages stubbed)
+### Stage ownership & service interfaces (Phase 4: through analysis real, generation stubbed)
 
 | # | Stage                  | Service class (module)          | Planned | Local/zero-cost approach |
 |---|------------------------|----------------------------------|---------|-------------------------------------------------------|
 | 1 | Upload                 | `services/uploads.py`            | P2 ✅   | Streaming multipart → `projects/<id>/input/`, SHA-256, FFprobe validation |
 | 2 | Preprocessing          | `services/preprocess.py`         | P3 ✅   | Worker + FFmpeg: analysis copy (≤640px @ 5fps), poster, 16 kHz WAV |
-| 3 | Speech-to-text         | `ai/stt.py`                      | P4      | faster-whisper small, int8, CPU, en/hi/bn (reads audio/audio.wav) |
-| 4 | Scene detection        | (added P4)                       | P4      | FFmpeg scene filter + frame sampling, on-disk frames |
-| 5 | OCR                    | `ai/ocr.py`                      | P4      | Lightweight ONNX OCR (RapidOCR class), sampled frames |
-| 6 | Vision understanding   | `ai/vision.py`                   | P4      | Small open VLM (Q4), sampled keyframes only |
-| 7 | Story understanding    | `ai/story.py`                    | P4      | Small CPU LLM (llama.cpp Q4) over compact stage text |
-| 8 | Duration selection     | Orchestrator logic               | P5      | Script length from target minutes (words/min pacing) |
-| 9 | Script generation      | `ai/script.py`                   | P5      | Same local LLM, prompted per context + language |
-| 10 | TTS                    | `ai/tts.py`                      | P5      | Local neural TTS with en/hi/bn voices |
-| 11 | Subtitle generation    | `ai/subtitles.py`                | P5      | Sentence→timestamp mapping from TTS audio → SRT |
-| 12 | Audio mixing           | (added P6)                       | P6      | FFmpeg amix/volume ducking, streamed |
-| 13 | FFmpeg rendering       | `video/renderer.py`              | P5      | FFmpeg filter graph, memory-bounded encode |
-| 14 | Quality control        | (added P6)                       | P6      | Re-probe duration/audio/ocr subtitle spot check |
+| 3 | Scene detection        | `video/scenes.py`                | P4 ✅   | FFmpeg `select='gt(scene,T)'` + min-duration/max-count assembly |
+| 4 | Speech-to-text         | `ai/stt.py`                      | P4 ✅   | faster-whisper tiny/base, int8, CPU; reads audio/audio.wav; model-gated |
+| 5 | OCR                    | `ai/ocr.py`                      | P4 ✅   | Tesseract on scene frames (capped); graceful absence |
+| 6 | Visual understanding   | `ai/vision.py`                   | P4 ✅   | Deterministic PIL metadata (brightness/blur/complexity); optional `LocalVisionProvider` |
+| 7 | Timeline alignment     | `services/timeline.py`           | P4 ✅   | Scene × transcript/OCR/visual binding + information density + QC |
+| 8 | Story understanding    | `ai/story.py`                    | P5      | Small CPU LLM (llama.cpp Q4) over compact stage text |
+| 9 | Duration selection     | Orchestrator logic               | P5      | Script length from target minutes (words/min pacing) |
+| 10 | Script generation      | `ai/script.py`                   | P5      | Same local LLM, prompted per context + language |
+| 11 | TTS                    | `ai/tts.py`                      | P5      | Local neural TTS with en/hi/bn voices |
+| 12 | Subtitle generation    | `ai/subtitles.py`                | P5      | Sentence→timestamp mapping from TTS audio → SRT |
+| 13 | Audio mixing           | (added P6)                       | P6      | FFmpeg amix/volume ducking, streamed |
+| 14 | FFmpeg rendering       | `video/renderer.py`              | P6      | FFmpeg filter graph, memory-bounded encode |
+| 15 | Quality control        | (added P6)                       | P6      | Re-probe duration/audio/ocr subtitle spot check |
 
-All AI stage classes extend `PipelineService` (`ai/base.py`), are registered
-in `ai/registry.py`, and **raise a controlled not-implemented error** — an
-orchestrator can later run them uniformly; the API never pretends work
-happened. Upload (`services/uploads.py`) is the first *real* stage.
+AI stage classes extend `PipelineService` (`ai/base.py`) and are registered
+in `ai/registry.py`. The remaining stubbed stages **raise a controlled
+not-implemented error** — the orchestrator runs them uniformly later; the
+API never pretends work happened. Stages 3-7 are *real* since Phase 4 and
+degrade gracefully per-stage (missing models/binary → warning, not failure).
 
-### Orchestration (Phase 3: live for preprocessing)
+### Orchestration (Phase 4: live for preprocessing + analysis)
 
 - `services/worker.py` is a **single daemon thread** with a FIFO queue — no
   multiprocessing on the 8 GB target. Jobs are persisted in SQLite *before*
   submission; the worker only transitions persisted states.
 - Per stage: `job: queued → running (progress%) → completed|failed`;
   `projects.status/progress` mirrors the aggregate; `error_message` captures
-  failures. The worker never dies: unexpected exceptions are logged and the
-  job is failed cleanly.
-- The current stage is `preprocess` (analysis assets). Later phases plug more
-  `PipelineStage` values into the same queue, one stage per job.
+  failures; `analysis_results` mirrors per-run stage + summary. The worker
+  never dies: unexpected exceptions are logged and the job is failed cleanly
+  (project/job rows deleted mid-run are dropped silently).
+- `PipelineStage` values (`preprocess`, `analysis`) dispatch into the same
+  queue, one stage per job — later phases plug more values unchanged.
+- Analysis idempotency: config + preprocessing fingerprints stored per run;
+  unchanged → reuse, changed → invalidate and re-run. Stale `analyzing`
+  projects (crash) auto-recover to `prepared` on the next analyze call.
 - Cleanup utilities (`services/cleanup.py`) sweep stale `temp/` files after
-  crashes so disk never fills; failed preprocess jobs remove partial assets.
+  crashes so disk never fills; failed jobs remove partial artifacts (analysis
+  failures preserve Phase 3 assets).
 
 ## 4. Resource-safety rules (8 GB RAM)
 
@@ -205,14 +278,18 @@ happened. Upload (`services/uploads.py`) is the first *real* stage.
 
 ## 5. API surface (stable for later phases)
 
-| Method | Endpoint                  | Behavior (Phase 3)                                  |
+| Method | Endpoint                  | Behavior (Phase 4)                                  |
 | ------ | ------------------------- | --------------------------------------------------- |
 | GET    | `/api/health`             | liveness                                            |
-| GET    | `/api/system/status`      | python/ffmpeg/sqlite/storage/db + limits + **worker** state, `phase: "3"` |
+| GET    | `/api/system/status`      | python/ffmpeg/sqlite/storage/db + limits + worker + **analysis deps** (whisper model, tesseract, scene engine), `phase: "4"` |
 | GET    | `/api/projects`           | list (metadata + asset refs included)               |
 | GET    | `/api/projects/{id}`      | one project + status/progress (404 on unknown id)   |
 | POST   | `/api/projects/upload`    | **multipart upload** → streams, validates, 201 READY |
 | POST   | `/api/projects/{id}/preprocess` | **queue analysis-asset job** → 201 JobOut (409 guards) |
+| POST   | `/api/projects/{id}/analyze` | **queue Phase 4 analysis** (idempotent reuse; 409 conflicts) |
+| GET    | `/api/projects/{id}/analysis` | latest run summary (404 until analyzed once)    |
+| GET    | `/api/projects/{id}/timeline` | aligned per-scene evidence JSON (404 until analyzed) |
+| GET    | `/api/projects/{id}/analysis/frames/{n}` | scene JPEG (int-validated, 404 if missing) |
 | GET    | `/api/projects/{id}/jobs` | job history (stage/status/progress/error)           |
 | GET    | `/api/projects/{id}/thumbnail` | poster JPEG (404 until PREPARED)               |
 | POST   | `/api/projects`           | create empty record (legacy)                        |
@@ -241,7 +318,10 @@ poll `GET /api/projects/{id}` for reactive progress.
   fingerprint + duplicate detection, FFprobe metadata, status/progress).
 - **Phase 3 ✅** preprocessing & analysis assets (analysis copy, poster,
   16 kHz WAV) + single-job background worker (`services/worker.py`).
-- **Phase 4** scene detection, speech-to-text, OCR, vision, story
-  understanding (local models read the analysis assets).
-- **Phase 5** script generation, TTS, subtitle sync, render/mix.
-- **Phase 6** quality control, queue hardening, cleanup + UX polish.
+- **Phase 4 ✅ (this phase)** on-device analysis: scene detection + frames,
+  faster-whisper STT, Tesseract OCR, deterministic visual metadata, timeline
+  alignment + context aggregation → ANALYZED (graceful per-stage absence).
+- **Phase 5** story understanding, duration selection, script generation,
+  TTS narration, subtitle sync.
+- **Phase 6** audio mixing, FFmpeg rendering, quality control, queue
+  hardening, cleanup + UX polish.

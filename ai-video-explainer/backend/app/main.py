@@ -95,10 +95,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         description=(
-            "Phase 3: a local, zero-cost AI video explainer. Videos stream "
-            "to disk, are validated with FFprobe, then a single background "
-            "worker builds analysis assets (low-res copy, thumbnail, 16 kHz "
-            "WAV). AI analysis and narration arrive in later phases."
+            "Phase 4: a local, zero-cost AI video explainer. Videos stream "
+            "to disk, are validated with FFprobe, preprocessed into analysis "
+            "assets, then analyzed entirely on-device (scene detection, "
+            "speech-to-text, OCR, visual metadata, aligned timeline). "
+            "Narration generation arrives in later phases."
         ),
         lifespan=lifespan,
     )
@@ -129,7 +130,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "app": settings.app_name,
             "version": settings.app_version,
-            "phase": 3,
+            "phase": 4,
             "api": {
                 "health": "/api/health",
                 "system_status": "/api/system/status",
@@ -138,11 +139,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "preprocess": "/api/projects/{id}/preprocess",
                 "jobs": "/api/projects/{id}/jobs",
                 "thumbnail": "/api/projects/{id}/thumbnail",
+                "analyze": "/api/projects/{id}/analyze",
+                "analysis": "/api/projects/{id}/analysis",
+                "timeline": "/api/projects/{id}/timeline",
             },
             "docs": "/docs",
         }
 
-    logger.info("Application factory ready (phase 3).")
+    logger.info("Application factory ready (phase 4).")
     return app
 
 
