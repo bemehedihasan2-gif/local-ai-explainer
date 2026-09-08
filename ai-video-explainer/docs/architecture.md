@@ -398,6 +398,29 @@ timings from persisted job timestamps) when a render completes
 (`services/performance.py`, best-effort); see
 `docs/phase8-real-world-test-report.md` for the honest real-hardware status.
 
+Phase 9 (Windows installation & launch layer, no pipeline change):
+`FIRST_RUN.bat` → `scripts/setup_windows_full.bat` performs the one-command
+setup (Python/Node detection, `.venv`, backend/frontend dependencies,
+storage dirs, idempotent SQLite migrations, backend tests, frontend `tsc`,
+security scan) and finishes with `scripts/check_dependencies.bat`
+(PASS/WARN/ERROR gate → `READY TO RUN`).
+`START_AI_VIDEO_EXPLAINER.bat` runs that gate, launches the backend and Vite
+frontend in tracked console windows (`scripts/_launch_backend.cmd` /
+`_launch_frontend.cmd`, output to `logs/launch.log`), polls `/api/health`
+and the frontend page, reuses already-running instances, refuses foreign
+port owners with WHAT/WHY/HOW errors, and opens the browser.
+`STOP_AI_VIDEO_EXPLAINER.bat` kills only the tracked console trees;
+`RESTART_AI_VIDEO_EXPLAINER.bat` stops, waits for the port, restarts.
+`scripts/configure_windows.bat` creates/validates `.env` (never overwrites;
+CPU-first defaults for Ryzen 3 3200G + 8 GB). `scripts/health_check.bat`
+reports the live endpoints; `backup_data.bat` ZIPs `data/projects` + DB
+without secrets; `uninstall_app.bat` removes only the environment unless a
+full data wipe is typed; `create_desktop_shortcut.ps1` adds a desktop
+shortcut. Models stay user-managed (`models/whisper|llm|voices`) with
+`[MISSING]/[WHY]/[WHERE]/[HOW]` reporting - never auto-downloaded.
+Guides: `docs/WINDOWS_SETUP.md`, `docs/WINDOWS_TROUBLESHOOTING.md`,
+`docs/LOCAL_MODELS.md`.
+
 Phase statuses: `analyzed → scripting → script_ready → narrating →
 narration_ready → rendering → completed` (failure at each stage returns to
 its retry state — `analyzed` / `script_ready` / `render_failed` — with the
@@ -442,3 +465,9 @@ failed run recorded and its partial artifacts removed). The UI polls `GET
   path redaction in the public status response, security/regression scans.
   The real-media acceptance matrix must run on the target Windows PC — see
   `docs/phase8-real-world-test-report.md`.
+- **Phase 9 ✅ (code; real Windows run pending)** beginner-friendly Windows
+  installation & launch: `FIRST_RUN.bat`, `setup_windows_full.bat`,
+  `check_dependencies.bat`, `configure_windows.bat`, the START/STOP/RESTART
+  launchers, `health_check.bat`, `backup_data.bat`, `uninstall_app.bat`,
+  `create_desktop_shortcut.ps1` + `docs/WINDOWS_*` / `LOCAL_MODELS` guides.
+  The double-click flow must be executed once on the target Windows PC.

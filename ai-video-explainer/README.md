@@ -238,9 +238,18 @@ ai-video-explainer/
 │   │                         #   render/ output/final.mp4 (Phase 7)
 │   ├── uploads/  temp/  outputs/  cache/
 ├── logs/                     # app.log + errors.log (auto-rotated)
-├── scripts/                  # Windows .bat + unix helpers (incl. whisper/LLM
-│                             #   downloads + Piper voices)
+├── scripts/                  # Windows .bat + unix helpers: setup/check/
+│                             #   configure, run, diagnose, health, backup,
+│                             #   uninstall, shortcut, whisper/LLM downloads +
+│                             #   Piper voices
+├── FIRST_RUN.bat             # Phase 9: one-click first-time setup
+├── START_AI_VIDEO_EXPLAINER.bat   # one-click launch (backend + frontend + browser)
+├── STOP_AI_VIDEO_EXPLAINER.bat    # one-click stop (launcher-started processes)
+├── RESTART_AI_VIDEO_EXPLAINER.bat # stop → wait → start
 ├── docs/architecture.md      # pipeline design (Phases 1-7 flows)
+├── docs/WINDOWS_SETUP.md     # beginner Windows install guide (A-O)
+├── docs/WINDOWS_TROUBLESHOOTING.md
+├── docs/LOCAL_MODELS.md      # model layout + .env wiring
 ├── env.example               # copy to .env (no real secrets exist)
 └── README.md
 ```
@@ -285,26 +294,49 @@ Notable knobs:
 | `RENDER_TAIL_MS` / `RENDER_HOLD_GAP_MAX_MS` | `1200` / `1500` | Narration tail / max held gap (no black frames) |
 | `RENDER_TIMEOUT_SECONDS` | `3600`                      | Upper bound for one render FFmpeg pass  |
 
-## Windows setup
+## Windows installation & launch (Phase 9 — beginner-friendly)
+
+The full installation/launch system lives next to this README. Install the
+free external tools once (Python, Node.js, FFmpeg, plus optional Tesseract;
+models are configured later — see `docs/LOCAL_MODELS.md`), then:
 
 ```bat
-:: one time
-python -m venv .venv
-.venv\Scripts\pip install -r backend\requirements-dev.txt
-cd frontend && npm install && cd ..
-copy env.example .env
+FIRST_RUN.bat                    :: one-time install + checks (double-click)
+START_AI_VIDEO_EXPLAINER.bat     :: start backend + frontend, open browser
+STOP_AI_VIDEO_EXPLAINER.bat      :: stop what the launcher started
+RESTART_AI_VIDEO_EXPLAINER.bat   :: stop, wait, start again
 ```
 
-…or run the bundled helper: `scripts\setup_windows.bat` (and
-`scripts\setup_unix.sh` on Linux/macOS). Verify FFmpeg once:
-`ffmpeg -version`.
+- `FIRST_RUN.bat` (→ `scripts\setup_windows_full.bat`) creates the venv,
+  installs backend/frontend dependencies, prepares `.env` + storage + the
+  SQLite database, runs the backend tests and frontend type check, and ends
+  with a full dependency check. Missing models are reported with
+  `[MISSING]`/`[WHY]`/`[WHERE]`/`[HOW]` — **large models are never
+downloaded automatically**.
+- `START_AI_VIDEO_EXPLAINER.bat` runs `scripts\check_dependencies.bat`
+  (PASS/WARN/ERROR gate → `READY TO RUN`), starts the backend on
+  `http://127.0.0.1:8000` and the frontend on `http://127.0.0.1:5173` in
+  their own tracked console windows, waits until `/api/health` and the page
+  are live, and opens the browser. Already-running instances are reused;
+  ports occupied by other programs produce clear WHAT/WHY/HOW errors
+  instead of killing anything.
+- Other helpers: `scripts\health_check.bat` (live PASS/WARN/FAIL report),
+  `scripts\backup_data.bat` (data ZIP, never secrets), `scripts\uninstall_app.bat`
+  (keeps your data unless you choose the full wipe),
+  `scripts\create_desktop_shortcut.ps1` (desktop shortcut),
+  `scripts\diagnose_windows.bat` + `scripts\check_dependencies.bat`
+  (reports), and `scripts\configure_windows.bat` (creates/validates `.env`).
+- Guides: **`docs\WINDOWS_SETUP.md`** (A–O install steps),
+  **`docs\WINDOWS_TROUBLESHOOTING.md`** (WHAT/WHY/HOW for every error) and
+  **`docs\LOCAL_MODELS.md`** (model layout + `.env` wiring).
 
 ### Start the backend
 
 ```bat
 .venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
-(cd into `backend/` first, or use `scripts\run_backend.bat`)
+(cd into `backend/` first, or use `scripts\run_backend.bat` — foreground,
+Ctrl+C to stop)
 
 Interactive API docs: http://127.0.0.1:8000/docs
 
@@ -315,12 +347,14 @@ cd frontend
 npm run dev
 ```
 http://127.0.0.1:5173 — Vite proxies `/api` to the backend, so no CORS setup.
+Dependencies install automatically when missing (`scripts\run_frontend.bat`).
 
 ### Run the tests
 
 ```bat
 .venv\Scripts\python -m pytest backend\tests -q
 ```
+(or `scripts\run_tests.bat`)
 
 Tests that need a real encoder generate tiny synthetic videos with FFmpeg and
 **skip gracefully** when FFmpeg is missing; the rest of the suite (Phases 1-7)
@@ -856,12 +890,24 @@ network.
    public status response, security/regression scans. The real-media
    acceptance matrix runs on the target Windows PC (see
    `docs/phase8-real-world-test-report.md`).
+9. **Phase 9 (done — code; real Windows run pending)** — beginner-friendly
+   Windows installation & launch system: `FIRST_RUN.bat` +
+   `scripts/setup_windows_full.bat` (one-command setup: venv, deps,
+   directories, DB migrations, tests, type check, security scan),
+   `scripts/check_dependencies.bat` + `scripts/configure_windows.bat`,
+   `START/STOP/RESTART_AI_VIDEO_EXPLAINER.bat` (dependency gate, port/
+   duplicate handling, health waits, auto-browser), plus
+   `health_check.bat`, `backup_data.bat`, `uninstall_app.bat`,
+   `create_desktop_shortcut.ps1` and the `docs/WINDOWS_*` + `LOCAL_MODELS`
+   guides. The one-click flow must be executed once on a real Windows PC
+   (every step is scripted and documented there).
 
 With Phase 7 the full product loop is complete: upload any supported video,
 pick English/Hindi/Bengali and 2/3/4 minutes, and the app returns a final
-narrated, subtitled MP4 — every step local. Future work (no rewrite needed) is
-polish: optional GPU encode, better local vision models, more voices/languages
-and packaging (installer).
+narrated, subtitled MP4 — every step local. With Phase 9 the loop is
+installable by double-clicking two `.bat` files on Windows. Future work (no
+rewrite needed) is polish: optional GPU encode, better local vision models,
+more voices/languages and packaging (installer).
 
 See `docs/architecture.md` for the full pipeline design.
 
@@ -869,6 +915,7 @@ See `docs/architecture.md` for the full pipeline design.
 
 | Symptom                                        | Fix                                                                 |
 | ---------------------------------------------- | ------------------------------------------------------------------- |
+| Setup/launcher prints `[ERROR]`/`[MISSING]`    | Follow its WHAT/WHY/WHERE/HOW; full guides in `docs\WINDOWS_SETUP.md`, `docs\WINDOWS_TROUBLESHOOTING.md`, `docs\LOCAL_MODELS.md` |
 | “FFmpeg not detected” / `ffmpeg_unavailable`   | Install FFmpeg (winget/gyan.dev), restart the backend, reload the UI |
 | `413 upload_too_large`                         | Raise `MAX_UPLOAD_SIZE_MB` in `.env` or use a smaller video          |
 | `unsupported_file_type`                        | Container not in the allowlist (list is shown in the error)          |
