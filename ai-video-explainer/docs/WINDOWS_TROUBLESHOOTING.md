@@ -49,6 +49,7 @@ Log files (no secrets are ever written to them):
 | `Frontend did not become ready within 90 seconds` | Vite crashed on startup | Read `logs\launch.log`; fix the underlying error, re-run |
 | `Insufficient disk space` | < 1 GB free on the project drive | Free disk space and re-run |
 | `Could not initialize database` | SQLite init failed | Check permissions on `data\`; `data\explainer.db` is auto-created — do not hand-edit it |
+| `X was unexpected at this time.` during setup (e.g. `. was unexpected at this time.`) | A `.bat`/`.cmd` file has Unix (LF) line endings — cmd.exe misparses multi-line blocks in LF-only files | Re-save the file as CRLF (VS Code: bottom-right `LF` → `CRLF`), or re-copy from the repo — `.gitattributes` now enforces CRLF on checkout |
 | `.env could not be loaded` | An invalid value in `.env` | Run `cd backend` then `..\.venv\Scripts\python.exe -c "from app.config import Settings; Settings()"` — the traceback names the bad setting |
 
 ---

@@ -61,8 +61,8 @@ if not exist ".venv\Scripts\python.exe" (
     if errorlevel 1 (
         cd ..
         echo [ERROR] .env could not be loaded by the backend Settings.
-        echo        A value is invalid (e.g. WHISPER_MODEL not tiny/base, an
-        echo        out-of-range timeout, a bad JSON list). Check the exact
+        echo        A value is invalid ^(e.g. WHISPER_MODEL not tiny/base, an
+        echo        out-of-range timeout, a bad JSON list^). Check the exact
         echo        message by running:
         echo          cd backend
         echo          ..\.venv\Scripts\python.exe -c "from app.config import Settings; Settings()"

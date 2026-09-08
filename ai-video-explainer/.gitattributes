@@ -1,0 +1,5 @@
+# Windows cmd.exe misparses batch files with Unix (LF) line endings -
+# parenthesized blocks can fail with ". was unexpected at this time."
+# Force CRLF on checkout for every file cmd.exe parses.
+*.bat text eol=crlf
+*.cmd text eol=crlf
