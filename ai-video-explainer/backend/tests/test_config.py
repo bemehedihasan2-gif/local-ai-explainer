@@ -56,3 +56,55 @@ def test_invalid_environment_is_rejected() -> None:
 def test_storage_directories_named_entries(settings) -> None:
     names = set(settings.storage_directories.keys())
     assert {"uploads", "projects", "temp", "outputs", "cache", "logs"} <= names
+
+
+def test_empty_tts_speaker_means_default_speaker() -> None:
+    """Regression: a ``TTS_SPEAKER=`` (empty) line in .env must load as
+    None, not fail with "Input should be a valid integer" (Windows
+    FIRST_RUN.bat Step 7/9)."""
+    assert Settings(tts_speaker="").tts_speaker is None
+    assert Settings(tts_speaker=None).tts_speaker is None
+    assert Settings(tts_speaker=3).tts_speaker == 3
+
+
+def test_output_fps_accepts_numeric_strings() -> None:
+    """Regression: ``OUTPUT_FPS=30`` arrives as the string "30" and must
+    be accepted (it is documented as "a number, or 'source'")."""
+    assert Settings(output_fps="30").output_fps == 30
+    assert Settings(output_fps="source").output_fps == "source"
+    assert Settings(output_fps="SOURCE").output_fps == "source"
+    assert Settings(output_fps=24).output_fps == 24
+    with pytest.raises(ValidationError):
+        Settings(output_fps="banana")
+    with pytest.raises(ValidationError):
+        Settings(output_fps="61")
+
+
+def test_empty_optional_paths_are_none() -> None:
+    """Regression: empty ``KEY=`` lines in .env for optional executables /
+    models / voices must resolve to None (auto-discover / not configured),
+    not ``Path('.')`` which would be treated as a configured path."""
+    s = Settings(
+        ffmpeg_path="",
+        ffprobe_path="",
+        tesseract_path="",
+        llama_cpp_path="",
+        llama_model_path="",
+        tts_executable_path="",
+        tts_voice_en="",
+        tts_voice_hi="",
+        tts_voice_bn="",
+        subtitle_font_path="",
+        subtitle_font_name="",
+    )
+    assert s.ffmpeg_path is None
+    assert s.ffprobe_path is None
+    assert s.tesseract_path is None
+    assert s.llama_cpp_path is None
+    assert s.llama_model_path is None
+    assert s.tts_executable_path is None
+    assert s.tts_voice_en is None
+    assert s.tts_voice_hi is None
+    assert s.tts_voice_bn is None
+    assert s.subtitle_font_path is None
+    assert s.subtitle_font_name is None

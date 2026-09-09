@@ -558,11 +558,43 @@ class Settings(BaseSettings):
     def _output_fps_valid(cls, value: int | str) -> int | str:
         if isinstance(value, str):
             value = value.strip().lower()
-            if value != "source":
+            if value == "source":
+                return value
+            # ``OUTPUT_FPS=30`` arrives as the string "30" (pydantic v2 does
+            # not coerce str -> int inside an ``int | str`` union), so numeric
+            # strings are parsed here and validated below.
+            try:
+                value = int(value)
+            except ValueError:
                 raise ValueError("output_fps must be a number or 'source'")
-            return value
         if not 1 <= value <= 60:
             raise ValueError("output_fps must be in [1, 60] or 'source'")
+        return value
+
+    @field_validator(
+        "ffmpeg_path",
+        "ffprobe_path",
+        "tesseract_path",
+        "llama_cpp_path",
+        "llama_model_path",
+        "tts_executable_path",
+        "tts_voice_en",
+        "tts_voice_hi",
+        "tts_voice_bn",
+        "subtitle_font_path",
+        "subtitle_font_name",
+        "tts_speaker",
+        mode="before",
+    )
+    @classmethod
+    def _empty_string_is_none(cls, value: object) -> object:
+        """Treat empty ``KEY=`` lines as "unset" (None), matching the
+        documented defaults (e.g. ``TTS_SPEAKER=`` means "default speaker"
+        and an empty ``FFMPEG_PATH=`` means "discover on PATH").
+        Without this, pydantic fails to parse ``TTS_SPEAKER=`` into
+        ``int | None`` and coerces empty ``Path | None`` fields to ``'.'``."""
+        if isinstance(value, str) and value.strip() == "":
+            return None
         return value
 
     @field_validator("video_crf")

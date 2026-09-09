@@ -294,7 +294,7 @@ REM ------------------------------------------------------------
 echo [12/19] Checking Whisper model ^(optional^)...
 set WHISPER_MODEL=tiny
 if exist ".env" (
-    for /f "tokens=1,* delims==" %%A in ('findstr /b "WHISPER_MODEL=" .env') do if not "%%B"=="" set WHISPER_MODEL=%%B
+    for /f "tokens=1,* delims== " %%A in ('findstr /b "WHISPER_MODEL=" .env') do if not "%%B"=="" set WHISPER_MODEL=%%B
 )
 if exist "models\whisper\%WHISPER_MODEL%\model.bin" (
     echo        [PASS] Whisper model "%WHISPER_MODEL%" present.

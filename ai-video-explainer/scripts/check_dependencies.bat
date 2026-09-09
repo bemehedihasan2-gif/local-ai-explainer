@@ -143,7 +143,7 @@ if exist ".env" (
     for /f "tokens=1,* delims==" %%A in ('findstr /b "LLAMA_MODEL_PATH=" .env') do set LLAMA_MODEL=%%B
     for /f "tokens=1,* delims==" %%A in ('findstr /b "SUBTITLE_FONT_PATH=" .env') do set FONT_PATH=%%B
     for /f "tokens=1,* delims==" %%A in ('findstr /b "SUBTITLE_FONT_NAME=" .env') do set FONT_NAME=%%B
-    for /f "tokens=1,* delims==" %%A in ('findstr /b "WHISPER_MODEL=" .env') do if not "%%B"=="" set WHISPER_MODEL=%%B
+    for /f "tokens=1,* delims== " %%A in ('findstr /b "WHISPER_MODEL=" .env') do if not "%%B"=="" set WHISPER_MODEL=%%B
     for /f "tokens=1,* delims==" %%A in ('findstr /b "BACKEND_PORT=" .env') do if not "%%B"=="" set BACKEND_PORT=%%B
 )
 
