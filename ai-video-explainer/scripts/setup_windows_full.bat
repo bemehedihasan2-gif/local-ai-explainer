@@ -432,7 +432,7 @@ if defined VOICE_BN if exist "%VOICE_BN%" (
 )
 if !VOICE_COUNT! EQU 0 if !ERRORS! EQU 0 (
     echo        [WARN] No Piper voice configured yet - configure at least one
-    echo              TTS_VOICE_<LANG> in .env before generating narration.
+    echo              TTS_VOICE_^<LANG^> in .env before generating narration.
     set /a WARNINGS+=1
 )
 

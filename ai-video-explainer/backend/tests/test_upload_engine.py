@@ -8,6 +8,7 @@ that genuinely need real decoding live in ``test_upload_real_media.py``.
 from __future__ import annotations
 
 import contextlib
+import os
 import sqlite3
 from pathlib import Path
 
@@ -25,6 +26,11 @@ from app.main import create_app
 from app.services.ffmpeg import FfmpegService
 from app.services.storage import StorageService
 from app.services.uploads import UploadService
+
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Fake CLI executables (shebang + chmod) require POSIX.",
+)
 
 # ~33 KB of fake-but-storable content (never decoded by the fake prober).
 VIDEO_BYTES = (b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 2048 + b"\x00\x00\x00\x08free") * 16

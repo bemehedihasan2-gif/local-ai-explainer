@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import struct
 import time
 import wave
@@ -25,6 +26,11 @@ from _media_helpers import install_fake_media_tools
 from app.main import create_app
 from app.services.narration import NarrationService
 from app.utils.errors import NarrationError
+
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Fake CLI executables (shebang + chmod) require POSIX.",
+)
 
 
 class FakeTTS:

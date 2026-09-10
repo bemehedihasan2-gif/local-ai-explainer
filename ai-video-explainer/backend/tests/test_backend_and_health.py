@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -110,8 +112,9 @@ def test_system_status_never_exposes_absolute_paths(client: TestClient) -> None:
     """Phase 8: public status redacts machine paths (basenames only)."""
     body = client.get("/api/system/status").json()
     ffmpeg = body["ffmpeg"]
-    assert ffmpeg["ffmpeg"]["path"] in (None, "ffmpeg")
-    assert ffmpeg["ffprobe"]["path"] in (None, "ffprobe")
+    # Basename only - either with or without the Windows .exe suffix.
+    assert ffmpeg["ffmpeg"]["path"] in (None, "ffmpeg", "ffmpeg.exe")
+    assert ffmpeg["ffprobe"]["path"] in (None, "ffprobe", "ffprobe.exe")
     # database.path is a plain filename, never an absolute path.
     assert "/" not in body["database"]["path"] and "\\" not in body["database"]["path"]
     for entry in body["storage"]["directories"]:
@@ -123,8 +126,10 @@ def test_system_status_never_exposes_absolute_paths(client: TestClient) -> None:
 def test_preflight_endpoint_works_and_is_honest(client: TestClient) -> None:
     """Phase 8: pre-flight returns 200 with machine-readable checks.
 
-    In this sandbox FFmpeg is absent, so ``ok`` must be False and the
-    blocking list must name ffmpeg - preflight never claims readiness.
+    ``ok`` reflects the machine's ACTUAL state: when FFmpeg is absent it
+    must be False with ffmpeg in the blocking list; when present it is
+    True and not blocking. Preflight never claims readiness it cannot
+    prove, and never reports unavailable when the binary runs.
     """
     response = client.get("/api/system/preflight", params={"language": "en"})
     assert response.status_code == 200
@@ -146,13 +151,26 @@ def test_preflight_endpoint_works_and_is_honest(client: TestClient) -> None:
         assert isinstance(entry["required"], bool)
         assert isinstance(entry["detail"], str)
 
-    # ffmpeg is not installed in this sandbox: required check must be False
-    # and reported as blocking (honest pre-flight, never a fake PASS).
-    assert checks["ffmpeg"]["ok"] is False
+    # The ffmpeg/ffprobe checks must agree with what is really installed:
+    # a required check that is not ok is blocking, and a missing binary
+    # always carries setup guidance (never a silent or fake PASS).
+    ffmpeg_present = bool(
+        client.app.state.settings.ffmpeg_path
+        or shutil.which("ffmpeg")
+    )
+    assert checks["ffmpeg"]["ok"] is ffmpeg_present
     assert checks["ffmpeg"]["required"] is True
-    assert "ffmpeg" in body["blocking"]
-    assert body["ok"] is False
-    assert checks["ffmpeg"]["setup_hint"]
+    assert ("ffmpeg" in body["blocking"]) is (not ffmpeg_present)
+    assert checks["ffmpeg"]["setup_hint"] or ffmpeg_present
+    assert checks["ffprobe"]["ok"] is ffmpeg_present
+
+    # Overall ok is False whenever ANY required check fails (never a fake
+    # ready state on this local-only pipeline).
+    expected_ok = not any(
+        entry["required"] and not entry["ok"]
+        for entry in checks.values()
+    )
+    assert body["ok"] is expected_ok
 
 
 def test_preflight_rejects_unknown_language(client: TestClient) -> None:

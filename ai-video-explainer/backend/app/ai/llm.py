@@ -53,6 +53,50 @@ _END_MARKERS = ("[end of text]", "<|end|>", "<|im_end|>", "</s>", "<s>", "<eos>"
 _LLAMA_CLI_NAMES = ("llama-cli",)
 
 
+def _invalid_executable_error(path: str | None) -> str | None:
+    """Windows-safe sanity check of a candidate executable.
+
+    A file that merely *exists* is not an executable: directories, text
+    files, Linux ELF binaries and model files (.gguf/.bin/.model) all fail
+    here. On Windows a valid executable must be a PE binary (MZ header); on
+    POSIX either an ELF binary or a script with a shebang line. Returns a
+    human-readable error, or None when the path looks executable.
+    """
+    if not path:
+        return None  # handled by the caller's "not found" message
+    if os.path.isdir(path):
+        return (
+            "The configured llama.cpp path is a directory, not an "
+            "executable. Point LLAMA_CPP_PATH at the 'llama-cli' binary "
+            "file itself."
+        )
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(4)
+    except OSError as exc:
+        return (
+            "The configured llama.cpp executable could not be read "
+            f"({exc}). Check LLAMA_CPP_PATH."
+        )
+    if os.name == "nt":  # pragma: no cover - Windows-only branch
+        if not head.startswith(b"MZ"):
+            return (
+                "The configured llama.cpp path is not a valid Windows "
+                "executable (it is not a .exe binary). This usually means "
+                "LLAMA_CPP_PATH points at a Linux binary, a model file "
+                "(.gguf) or a text file. Point it at the real "
+                "'llama-cli.exe'."
+            )
+    else:
+        if not (head.startswith(b"\x7fELF") or head.startswith(b"#!")):
+            return (
+                "The configured llama.cpp path is not an executable "
+                "binary or script. Check LLAMA_CPP_PATH - it must point "
+                "at the 'llama-cli' executable, not a model file."
+            )
+    return None
+
+
 class UnavailableProvider:
     """Provider returned when the LLM stage is disabled by configuration."""
 
@@ -161,7 +205,7 @@ class LlamaCppProvider:
                 "PATH, or set LLAMA_CPP_PATH in .env to the binary. The app "
                 "never downloads it automatically."
             )
-        return None
+        return _invalid_executable_error(self._executable)
 
     def _model_error(self) -> str | None:
         if self._model_path is None:
@@ -215,6 +259,10 @@ class LlamaCppProvider:
             self._model_path.name, self._settings.llama_threads,
             self._settings.llama_context_size, max_tokens,
         )
+        exec_validation = _invalid_executable_error(self._executable)
+        if exec_validation is not None:
+            raise LLMUnavailableError(exec_validation)
+
         try:
             proc = subprocess.run(
                 args,
@@ -237,6 +285,24 @@ class LlamaCppProvider:
                 f"{self._settings.llama_timeout_seconds}s. The process was "
                 "terminated. Try again, or raise LLAMA_TIMEOUT_SECONDS for "
                 "very long generations."
+            ) from exc
+        except OSError as exc:
+            # Windows raises OSError (WinError 193 "%1 is not a valid Win32
+            # application") when the configured file is not a runnable
+            # executable (e.g. a Linux ELF, a .gguf model, or a corrupt
+            # file). Surface it as a clean configuration error instead of a
+            # raw traceback.
+            logger.error(
+                "llama.cpp subprocess failed to start (model=%s): %s",
+                self._model_path.name, exc,
+            )
+            raise LLMUnavailableError(
+                "The configured llama.cpp executable could not be run. "
+                "On Windows this usually means the file is not a valid "
+                "Windows executable (e.g. a Linux binary or a model file "
+                "pointed at by LLAMA_CPP_PATH). Point LLAMA_CPP_PATH at "
+                "the real 'llama-cli.exe' binary. "
+                f"(Error: {exc})"
             ) from exc
 
         if proc.returncode != 0:

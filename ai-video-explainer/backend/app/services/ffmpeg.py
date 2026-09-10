@@ -31,7 +31,15 @@ SETUP_HINT = (
 
 
 def _version_of_binary(path: str) -> tuple[bool, str | None]:
-    """Run ``<bin> -version``; return (ran_ok, version_or_None)."""
+    """Run ``<bin> -version``; return (ran_ok, version_or_None).
+
+    Some FFmpeg builds print the version banner on stdout, others on
+    stderr, so both streams are considered. ``ran_ok`` is True only when
+    the process actually started and exited 0 - a configured path that
+    exists but cannot run (wrong architecture, corrupt file, model file)
+    is reported as *not available*, never as available-with-unknown-
+    version.
+    """
     flags: dict[str, object] = {}
     if os.name == "nt":  # pragma: no cover - Windows-only nicety
         flags["creationflags"] = subprocess.CREATE_NO_WINDOW
@@ -45,12 +53,20 @@ def _version_of_binary(path: str) -> tuple[bool, str | None]:
             timeout=10,
             **flags,  # type: ignore[arg-type]
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except OSError as exc:
+        # Windows raises OSError/WinError 193 for files that are not valid
+        # Win32 executables (e.g. a Linux binary or a model file pointed at
+        # by FFMPEG_PATH). That is an honest "not available".
+        logger.warning("Could not execute '%s -version': %s", path, exc)
+        return False, None
+    except subprocess.SubprocessError as exc:
         logger.warning("Could not execute '%s -version': %s", path, exc)
         return False, None
     if proc.returncode != 0:
+        logger.warning("'%s -version' exited with code %s", path, proc.returncode)
         return False, None
-    first_line = (proc.stdout or "").splitlines()[0] if proc.stdout else ""
+    combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    first_line = next((ln.strip() for ln in combined.splitlines() if ln.strip()), "")
     match = VERSION_RE.search(first_line)
     return True, (match.group(1) if match else first_line[:60] or "unknown")
 
@@ -96,12 +112,18 @@ class FfmpegService:
 
     # -- lookup ----------------------------------------------------------
     def _resolve(self, configured: str | Path | None, name: str) -> str | None:
+        """Windows-safe resolution: configured path first, then PATH.
+
+        A configured path counts only when it is a regular file (a
+        directory is never treated as an executable). ``shutil.which``
+        handles ``ffmpeg.exe``/``ffprobe.exe`` on Windows via PATHEXT.
+        """
         if configured:
             candidate = str(configured)
-            if os.path.isfile(candidate):
+            if os.path.isfile(candidate) and not os.path.isdir(candidate):
                 return candidate
             logger.warning(
-                "Configured %s path '%s' does not exist; falling back to PATH.",
+                "Configured %s path '%s' is not a file; falling back to PATH.",
                 name, candidate,
             )
         return shutil.which(name)

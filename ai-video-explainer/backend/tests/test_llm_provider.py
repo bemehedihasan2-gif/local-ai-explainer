@@ -9,6 +9,7 @@ timeout, malformed output, non-zero exit.
 from __future__ import annotations
 
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -27,6 +28,11 @@ from app.utils.errors import (
     LLMModelMissingError,
     LLMTimeoutError,
     LLMUnavailableError,
+)
+
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Fake CLI executables (shebang + chmod) require POSIX.",
 )
 
 

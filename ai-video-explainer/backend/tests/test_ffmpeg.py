@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 import os
+import shutil
 import stat
+
+import pytest
 
 from app.services.ffmpeg import FfmpegService
 from app.utils.errors import FFmpegUnavailableError
@@ -26,9 +29,11 @@ def _fake_binary(tmp_path, name: str, version_line: str) -> str:
     return str(path)
 
 
-def test_detection_when_ffmpeg_missing(settings, tmp_path) -> None:
-    # Configure explicit paths that cannot exist -> falls back to PATH,
-    # which (in this sandbox) does not contain ffmpeg.
+def test_detection_when_ffmpeg_missing(settings, tmp_path, monkeypatch) -> None:
+    # Configure explicit paths that cannot exist, and force the PATH
+    # lookup to fail too - so the "missing" state is deterministic on ANY
+    # machine (including ones with real FFmpeg installed).
+    monkeypatch.setattr(shutil, "which", lambda name: None)
     settings.ffmpeg_path = tmp_path / "missing" / "ffmpeg.exe"
     settings.ffprobe_path = tmp_path / "missing" / "ffprobe.exe"
     status = FfmpegService(settings).detect()
@@ -40,7 +45,8 @@ def test_detection_when_ffmpeg_missing(settings, tmp_path) -> None:
     assert "ffmpeg" in status.setup_hint.lower()
 
 
-def test_require_raises_when_missing(settings, tmp_path) -> None:
+def test_require_raises_when_missing(settings, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
     settings.ffmpeg_path = tmp_path / "nope" / "ffmpeg"
     settings.ffprobe_path = tmp_path / "nope" / "ffprobe"
     try:
@@ -52,6 +58,10 @@ def test_require_raises_when_missing(settings, tmp_path) -> None:
         raise AssertionError("require() should raise when FFmpeg is missing")
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Fake CLI executables (shebang + chmod) require POSIX.",
+)
 def test_detection_when_ffmpeg_present(settings, tmp_path) -> None:
     settings.ffmpeg_path = _fake_binary(tmp_path, "ffmpeg", "ffmpeg version 7.1.1-fake Copyright (c) 2000-2024 the FFmpeg developers")
     settings.ffprobe_path = _fake_binary(tmp_path, "ffprobe", "ffprobe version 7.1.1-fake Copyright (c) 2000-2024 the FFmpeg developers")

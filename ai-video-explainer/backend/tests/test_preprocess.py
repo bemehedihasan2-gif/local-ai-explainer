@@ -10,6 +10,7 @@ thumbnail endpoint. Real-media equivalents live in ``test_preprocess_real.py``.
 from __future__ import annotations
 
 import contextlib
+import os
 import time
 
 import pytest
@@ -20,6 +21,11 @@ from _media_helpers import (
     probe_payload,
 )
 from app.main import create_app
+
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Fake CLI executables (shebang + chmod) require POSIX.",
+)
 
 VIDEO_BYTES = (b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 2048 + b"\x00\x00\x00\x08free") * 16
 

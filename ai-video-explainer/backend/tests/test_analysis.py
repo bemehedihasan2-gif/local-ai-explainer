@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import time
 
 import pytest
@@ -24,6 +25,11 @@ from fastapi.testclient import TestClient
 from _media_helpers import install_fake_media_tools
 from app.main import create_app
 from app.utils.errors import SceneDetectionError
+
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Fake CLI executables (shebang + chmod) require POSIX.",
+)
 
 VIDEO_BYTES = (b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 2048 + b"\x00\x00\x00\x08free") * 16
 

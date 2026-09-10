@@ -348,7 +348,7 @@ if defined VOICE_BN (
 )
 if !ERRORS! EQU 0 if !VOICES_CONFIGURED! EQU 0 (
     echo [ERROR] No Piper voice is configured for any language.
-    echo         [HOW] Configure at least one TTS_VOICE_<LANG> in .env ^(English
+    echo         [HOW] Configure at least one TTS_VOICE_^<LANG^> in .env ^(English
     echo              recommended first^).
     set /a ERRORS+=1
 )

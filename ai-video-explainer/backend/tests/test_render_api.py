@@ -10,6 +10,7 @@ transition to COMPLETED, manifest, idempotent reuse, failure retry.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +20,11 @@ import test_script_api as tsa
 import test_narration_api as tna
 from app.main import create_app
 from app.utils.errors import RenderError
+
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Fake CLI executables (shebang + chmod) require POSIX.",
+)
 
 
 def _now() -> str:
