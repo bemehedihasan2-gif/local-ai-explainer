@@ -67,12 +67,12 @@ REM ------------------------------------------------------------
 set FFMPEG_PATH=
 set FFPROBE_PATH=
 if exist ".env" (
-    for /f "tokens=1,* delims==" %%A in ('findstr /b "FFMPEG_PATH=" .env') do set FFMPEG_PATH=%%B
-    for /f "tokens=1,* delims==" %%A in ('findstr /b "FFPROBE_PATH=" .env') do set FFPROBE_PATH=%%B
+    for /f "tokens=1,* delims==" %%A in ('findstr /b "FFMPEG_PATH=" .env') do set "FFMPEG_PATH=%%B"
+    for /f "tokens=1,* delims==" %%A in ('findstr /b "FFPROBE_PATH=" .env') do set "FFPROBE_PATH=%%B"
 )
 
 set FFMPEG_BIN=ffmpeg
-if defined FFMPEG_PATH set FFMPEG_BIN=%FFMPEG_PATH%
+if defined FFMPEG_PATH set "FFMPEG_BIN=%FFMPEG_PATH%"
 where "%FFMPEG_BIN%" >nul 2>nul
 if errorlevel 1 (
     echo [ERROR] FFmpeg not found ^(%FFMPEG_BIN%^).
@@ -86,7 +86,7 @@ if errorlevel 1 (
 )
 
 set FFPROBE_BIN=ffprobe
-if defined FFPROBE_PATH set FFPROBE_BIN=%FFPROBE_PATH%
+if defined FFPROBE_PATH set "FFPROBE_BIN=%FFPROBE_PATH%"
 where "%FFPROBE_BIN%" >nul 2>nul
 if errorlevel 1 (
     echo [ERROR] FFprobe not found ^(%FFPROBE_BIN%^).
@@ -103,10 +103,10 @@ REM  Tesseract (optional - OCR)
 REM ------------------------------------------------------------
 set TESSERACT_PATH=
 if exist ".env" (
-    for /f "tokens=1,* delims==" %%A in ('findstr /b "TESSERACT_PATH=" .env') do set TESSERACT_PATH=%%B
+    for /f "tokens=1,* delims==" %%A in ('findstr /b "TESSERACT_PATH=" .env') do set "TESSERACT_PATH=%%B"
 )
 set TESS_BIN=tesseract
-if defined TESSERACT_PATH set TESS_BIN=%TESSERACT_PATH%
+if defined TESSERACT_PATH set "TESS_BIN=%TESSERACT_PATH%"
 where "%TESS_BIN%" >nul 2>nul
 if errorlevel 1 (
     echo [WARN] Tesseract not found - OCR will be skipped (optional).
@@ -129,10 +129,10 @@ REM  Piper TTS (required for narration)
 REM ------------------------------------------------------------
 set TTS_EXE=
 if exist ".env" (
-    for /f "tokens=1,* delims==" %%A in ('findstr /b "TTS_EXECUTABLE_PATH=" .env') do set TTS_EXE=%%B
+    for /f "tokens=1,* delims==" %%A in ('findstr /b "TTS_EXECUTABLE_PATH=" .env') do set "TTS_EXE=%%B"
 )
 set PIPER_BIN=piper
-if defined TTS_EXE set PIPER_BIN=%TTS_EXE%
+if defined TTS_EXE set "PIPER_BIN=%TTS_EXE%"
 where "%PIPER_BIN%" >nul 2>nul
 if errorlevel 1 (
     echo [ERROR] Piper not found ^(%PIPER_BIN%^) - narration is disabled.
@@ -148,9 +148,9 @@ set VOICE_EN=
 set VOICE_HI=
 set VOICE_BN=
 if exist ".env" (
-    for /f "tokens=1,* delims==" %%A in ('findstr /b "TTS_VOICE_EN=" .env') do set VOICE_EN=%%B
-    for /f "tokens=1,* delims==" %%A in ('findstr /b "TTS_VOICE_HI=" .env') do set VOICE_HI=%%B
-    for /f "tokens=1,* delims==" %%A in ('findstr /b "TTS_VOICE_BN=" .env') do set VOICE_BN=%%B
+    for /f "tokens=1,* delims==" %%A in ('findstr /b "TTS_VOICE_EN=" .env') do set "VOICE_EN=%%B"
+    for /f "tokens=1,* delims==" %%A in ('findstr /b "TTS_VOICE_HI=" .env') do set "VOICE_HI=%%B"
+    for /f "tokens=1,* delims==" %%A in ('findstr /b "TTS_VOICE_BN=" .env') do set "VOICE_BN=%%B"
 )
 if defined VOICE_EN (
     if exist "%VOICE_EN%" (echo [OK] English voice: %VOICE_EN%) else (echo [ERROR] English voice file missing: %VOICE_EN%)
@@ -180,11 +180,11 @@ REM ------------------------------------------------------------
 set LLAMA_EXE=
 set LLAMA_MODEL=
 if exist ".env" (
-    for /f "tokens=1,* delims==" %%A in ('findstr /b "LLAMA_CPP_PATH=" .env') do set LLAMA_EXE=%%B
-    for /f "tokens=1,* delims==" %%A in ('findstr /b "LLAMA_MODEL_PATH=" .env') do set LLAMA_MODEL=%%B
+    for /f "tokens=1,* delims==" %%A in ('findstr /b "LLAMA_CPP_PATH=" .env') do set "LLAMA_EXE=%%B"
+    for /f "tokens=1,* delims==" %%A in ('findstr /b "LLAMA_MODEL_PATH=" .env') do set "LLAMA_MODEL=%%B"
 )
 set LLAMA_BIN=llama-cli
-if defined LLAMA_EXE set LLAMA_BIN=%LLAMA_EXE%
+if defined LLAMA_EXE set "LLAMA_BIN=%LLAMA_EXE%"
 where "%LLAMA_BIN%" >nul 2>nul
 if errorlevel 1 (
     where llama-cli.exe >nul 2>nul
@@ -230,7 +230,7 @@ REM  Subtitle font for Hindi/Bengali burn-in
 REM ------------------------------------------------------------
 set FONT_PATH=
 if exist ".env" (
-    for /f "tokens=1,* delims==" %%A in ('findstr /b "SUBTITLE_FONT_PATH=" .env') do set FONT_PATH=%%B
+    for /f "tokens=1,* delims==" %%A in ('findstr /b "SUBTITLE_FONT_PATH=" .env') do set "FONT_PATH=%%B"
 )
 if defined FONT_PATH (
     if exist "%FONT_PATH%" (
